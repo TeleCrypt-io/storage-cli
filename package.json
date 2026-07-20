@@ -1,0 +1,29 @@
+{
+  "name": "@telecrypt/secure-storage",
+  "version": "0.1.0",
+  "license": "BUSL-1.1",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint src test --ext .ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "synapse:up": "./throwaway_synapse/up.sh",
+    "synapse:fresh": "./throwaway_synapse/up.sh --fresh",
+    "synapse:down": "./throwaway_synapse/down.sh"
+  },
+  "dependencies": {
+    "matrix-js-sdk": "41.9.0",
+    "matrix-encrypt-attachment": "1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  }
+}

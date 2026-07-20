@@ -3,4 +3,4 @@ dist/
 *.log
 
 # Disposable test Synapse state — never commit (contains generated signing keys)
-docker/synapse-data/
+throwaway_synapse/data/
