@@ -124,7 +124,7 @@ export class SecureStorage {
     const ciphertext = await res.arrayBuffer();
     const data = await decryptAttachment(
       ciphertext,
-      info as Parameters<typeof decryptAttachment>[1],
+      info as unknown as Parameters<typeof decryptAttachment>[1],
     );
     const eventContent = (await branch.getFileEvent()).getContent();
     const infoBlock = eventContent["info"] as Record<string, unknown> | undefined;
