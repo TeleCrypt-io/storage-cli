@@ -15,7 +15,8 @@
 
 ## Test results
 
-**Total: 37 tests, 37 passed, 0 failed** (test 4.6 is known-flaky — see below)
+**Total: 37 tests, 37 passed, 0 failed** (verified deterministically — 15
+consecutive standalone runs of test 4.6, plus 3 full-suite runs, all green)
 
 - `test/functional/smoke.test.ts` — 1 test
 - `test/functional/tree.test.ts` — 10 tests
@@ -35,7 +36,8 @@ the previous note in this file describing build errors was inaccurate).
 - The `httpUrl` from `getFileInfo()` 404s on modern Synapse (authenticated media required). All downloads in the library use the authenticated workaround (`mxcUrlToHttp` with `useAuthentication=true` + `Authorization: Bearer`).
 - Phase 5 test 5.3 (second device recovery) verifies secret storage bootstrap from a recovery key. Full cross-device key restoration depends on key backup which requires additional setup.
 - Test 3.8 (revocation) genuinely proves key-denial: Bob cannot decrypt "AFTER removal" via the library, via a direct low-level room-event fetch (denied by Synapse), or by attempting to decrypt the raw ciphertext (which he *can* fetch — media isn't ACL'd — but not decrypt, since he never obtains the AES key). An earlier version of this test only checked room membership, which proved the kick worked but not that E2EE key-denial worked; fixed 2026-07-20.
-- Test 4.6 (fresh-client version history) requires a **persistent** crypto store to mean anything — the harness's default `useIndexedDB: false` makes "fresh client, same user" crypto-amnesiac (in-memory store discarded on restart), so it could never have recovered real history no matter what `getVersionHistory()` did. Fixed 2026-07-20 by scoping `useIndexedDB: true` (via `fake-indexeddb`, dev-dependency) to just this test. This is a genuine but incomplete fix: it recovers all 3 versions in ~9 of 10 runs; the rest recover only 2, apparently due to an upstream timing issue in when `matrix-js-sdk`'s rust crypto backend persists the ratchet state needed to re-decrypt one's own past messages. Full detail and next steps in `BLOCKERS.md`.
+- Test 4.6 (fresh-client version history) requires a **persistent** crypto store to mean anything — the harness's default `useIndexedDB: false` makes "fresh client, same user" crypto-amnesiac (in-memory store discarded on restart), so it could never have recovered real history no matter what `getVersionHistory()` did. Fixed 2026-07-20 by scoping `useIndexedDB: true` (via `fake-indexeddb`, dev-dependency) to just this test, plus polling for the full 3-version chain (re-fetching the branch and calling `getVersionHistory()` each iteration) instead of asserting on the first read — the chain walk depends on v2/v3 finishing local decryption and relation aggregation, which is asynchronous and can still be settling right after the (unencrypted) branch state events land. The initial version of this fix (persistence alone, first-read assertion) was flaky (~1-in-10 runs recovered only 2 of 3 versions); adding the poll made it deterministic across 15 consecutive runs. Note this genuinely depends on the chain being recoverable — if key-denial were real, the poll times out and the test fails, it doesn't mask anything.
+- An earlier hypothesis for 4.6's root cause — that `getVersionHistory()` only scans the live timeline without paginating, and a shallow `initialSyncLimit: 10` sync misses older events — was tested (forced `client.scrollback()`) and disproved: the fresh client's first `/sync` already contained all 19 timeline events for the room. The actual cause was crypto-store persistence + decryption-settling timing, not pagination.
 
 ## Out of scope (not built)
 
