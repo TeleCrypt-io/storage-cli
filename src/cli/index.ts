@@ -9,6 +9,7 @@ import { initStorageForNewSession, openStorage, waitForBackupSettled } from "./s
 import { CliError } from "./errors.js";
 import { runAction, CommandResult } from "./output.js";
 import * as core from "../core/operations.js";
+import { runDeviceCodeLogin } from "./oidc.js";
 
 // matrix-js-sdk (loglevel) and the rust-crypto WASM tracing layer write
 // verbose logs straight to console.log/debug/info/trace (stdout by default)
@@ -76,23 +77,53 @@ storage
   .command("login")
   .description("Log in and persist the session + crypto store to the profile")
   .requiredOption("--homeserver <url>", "Matrix homeserver base URL")
-  .requiredOption("--user <localpart>", "Username (localpart or full MXID)")
-  .requiredOption("--password <pw>", "Password")
+  .option("--user <localpart>", "Username (localpart or full MXID) — password login")
+  .option("--password <pw>", "Password — password login")
+  .option("--oidc", "Log in via OIDC/MAS device-code grant instead of password")
   .action(async (opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
-      const client = createClient({ baseUrl: opts.homeserver });
-      let res;
-      try {
-        res = await client.loginWithPassword(opts.user, opts.password);
-      } catch (err) {
-        throw new CliError(`login failed: ${(err as Error).message}`);
+      let session: Session;
+
+      if (opts.oidc) {
+        session = await runDeviceCodeLogin(opts.homeserver, {
+          onVerification: ({ verificationUri, verificationUriComplete, userCode }) => {
+            // Progress output — stderr only, so it never corrupts the
+            // stdout contract (--json's single JSON line / text mode's
+            // single line), same convention as TELECRYPT_IO_STORAGE_DEBUG
+            // SDK logging below.
+            process.stderr.write(
+              [
+                "",
+                `To finish logging in, visit: ${verificationUriComplete ?? verificationUri}`,
+                verificationUriComplete ? "" : `and enter code: ${userCode}`,
+                "Attempting to open your browser…",
+                "Waiting for approval…",
+                "",
+              ]
+                .filter((l) => l !== "")
+                .join("\n") + "\n",
+            );
+          },
+        });
+      } else {
+        if (!opts.user || !opts.password) {
+          throw new CliError("--user and --password are required for password login (or pass --oidc)");
+        }
+        const client = createClient({ baseUrl: opts.homeserver });
+        let res;
+        try {
+          res = await client.loginWithPassword(opts.user, opts.password);
+        } catch (err) {
+          throw new CliError(`login failed: ${(err as Error).message}`);
+        }
+        session = {
+          homeserver: opts.homeserver,
+          userId: res.user_id,
+          deviceId: res.device_id,
+          accessToken: res.access_token,
+        };
       }
-      const session: Session = {
-        homeserver: opts.homeserver,
-        userId: res.user_id,
-        deviceId: res.device_id,
-        accessToken: res.access_token,
-      };
+
       writeSession(session);
       // Establishes this device's crypto identity and does a first sync
       // (proves connectivity end-to-end), and writes the initial crypto

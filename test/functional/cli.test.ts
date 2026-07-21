@@ -2,24 +2,47 @@ import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { cliJson, freshProfileDir, runCli } from "../harness/cli";
+import { registerAndWaitForMasProvisioning } from "../harness/users";
 import { waitFor } from "../harness/waitFor";
 
 const HOMESERVER = "http://localhost:8008";
 
 function randomUser(prefix: string): string {
-  return `${prefix}_${Math.random().toString(36).slice(2, 8)}`;
+  // MAS enforces the Matrix user ID grammar strictly (lowercase localpart) —
+  // lowercase defensively since some prefixes here are historically
+  // mixed-case (e.g. "multiA").
+  return `${prefix}_${Math.random().toString(36).slice(2, 8)}`.toLowerCase();
 }
 
-/** Registers a brand-new account in the given profile dir and returns its
- * userId + the password (needed later for a fresh-device login in CLI.4). */
+/**
+ * Provisions a brand-new account and logs the CLI into it in the given
+ * profile dir, returning its userId + the password (needed later for a
+ * fresh-device login in CLI.4).
+ *
+ * The throwaway stack's Synapse delegates auth to a local MAS (see
+ * docs/DECISIONS.md D6), so the CLI's own `storage register` command (which
+ * still does a plain `POST /_matrix/client/v3/register`) no longer works
+ * against it — Synapse refuses that request once delegated ("Registration
+ * has been disabled"). That command's own implementation is untouched and
+ * still correct against a plain, non-MAS Synapse; this test suite just needs
+ * a different way to provision the account it drives `storage login` against
+ * — same MAS-side provisioning `test/harness/users.ts` uses for the rest of
+ * the suite, then the CLI's ordinary password `login`.
+ *
+ * `registerAndWaitForMasProvisioning` (not just `registerUserInMas`)
+ * because MAS provisions the Synapse-side account asynchronously — see its
+ * doc comment in test/harness/users.ts. Without waiting, the CLI subprocess's
+ * own login attempt below can hit the same transient race under load.
+ */
 async function registerProfile(
   dir: string,
   prefix: string,
 ): Promise<{ userId: string; username: string; password: string }> {
   const username = randomUser(prefix);
   const password = "pw_" + Math.random().toString(36).slice(2, 10);
+  await registerAndWaitForMasProvisioning(username, password);
   const res = await cliJson(
-    ["storage", "register", "--homeserver", HOMESERVER, "--user", username, "--password", password],
+    ["storage", "login", "--homeserver", HOMESERVER, "--user", username, "--password", password],
     { TELECRYPT_IO_STORAGE_HOME: dir },
   );
   expect(res.code).toBe(0);

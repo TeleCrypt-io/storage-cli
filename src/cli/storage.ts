@@ -1,9 +1,10 @@
 import "fake-indexeddb/auto";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/index.js";
 import { TeleCryptIOStorage } from "../TeleCryptIOStorage.js";
-import { cryptoSnapshotPath, ensureProfileDir, profileDir, readSession, Session } from "./profile.js";
+import { cryptoSnapshotPath, ensureProfileDir, profileDir, readSession, writeSession, Session } from "./profile.js";
 import { persistCryptoStore, restoreCryptoStore } from "./cryptoSnapshot.js";
 import { CliError } from "./errors.js";
+import { buildTokenRefreshFunction } from "../core/oidc.js";
 
 export interface OpenedStorage {
   storage: TeleCryptIOStorage;
@@ -14,6 +15,52 @@ export interface OpenedStorage {
    * device keys, etc.) — this is what makes decryption survive across
    * separate processes. */
   close: () => Promise<void>;
+}
+
+/**
+ * Builds a TeleCryptIOStorage for the given session — plain password/access-
+ * token sessions go through `create()`; sessions with an OIDC token set
+ * (persisted by `storage login --oidc`, see src/cli/oidc.ts) go through
+ * `createFromOidc()` with a token refresh function wired to persist
+ * refreshed tokens straight back to this profile's session.json, so a later
+ * CLI invocation picks up the refreshed access token rather than the
+ * (possibly now-expired) one this process started with. Needs no OIDC
+ * discovery / `window` shim here — `oidcTokenEndpoint` was already resolved
+ * and persisted at login time (see src/cli/oidc.ts).
+ */
+async function buildStorageForSession(session: Session, dir: string): Promise<TeleCryptIOStorage> {
+  if (!session.refreshToken || !session.oidcClientId || !session.oidcTokenEndpoint) {
+    return TeleCryptIOStorage.create({
+      baseUrl: session.homeserver,
+      userId: session.userId,
+      accessToken: session.accessToken,
+      deviceId: session.deviceId,
+    });
+  }
+
+  const tokenRefreshFunction = buildTokenRefreshFunction(
+    session.oidcTokenEndpoint,
+    session.oidcClientId,
+    async (tokens) => {
+      writeSession(
+        {
+          ...session,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken ?? session.refreshToken,
+        },
+        dir,
+      );
+    },
+  );
+
+  return TeleCryptIOStorage.createFromOidc({
+    baseUrl: session.homeserver,
+    userId: session.userId,
+    accessToken: session.accessToken,
+    deviceId: session.deviceId,
+    refreshToken: session.refreshToken,
+    tokenRefreshFunction,
+  });
 }
 
 /**
@@ -30,12 +77,7 @@ export async function openStorage(dir: string = profileDir()): Promise<OpenedSto
   const snapshotPath = cryptoSnapshotPath(dir);
   await restoreCryptoStore(snapshotPath);
 
-  const storage = await TeleCryptIOStorage.create({
-    baseUrl: session.homeserver,
-    userId: session.userId,
-    accessToken: session.accessToken,
-    deviceId: session.deviceId,
-  });
+  const storage = await buildStorageForSession(session, dir);
 
   let closed = false;
   const close = async () => {
@@ -98,12 +140,7 @@ export async function initStorageForNewSession(
   ensureProfileDir(dir);
   const snapshotPath = cryptoSnapshotPath(dir);
 
-  const storage = await TeleCryptIOStorage.create({
-    baseUrl: session.homeserver,
-    userId: session.userId,
-    accessToken: session.accessToken,
-    deviceId: session.deviceId,
-  });
+  const storage = await buildStorageForSession(session, dir);
 
   let closed = false;
   const close = async () => {
