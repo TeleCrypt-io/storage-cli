@@ -5,15 +5,10 @@ import * as path from "node:path";
 import { Command } from "commander";
 import { createClient } from "matrix-js-sdk";
 import { clearProfile, readSession, writeSession, Session } from "./profile.js";
-import {
-  initStorageForNewSession,
-  openStorage,
-  requireFile,
-  requireTree,
-  waitForBackupSettled,
-} from "./storage.js";
+import { initStorageForNewSession, openStorage, waitForBackupSettled } from "./storage.js";
 import { CliError } from "./errors.js";
 import { runAction, CommandResult } from "./output.js";
+import * as core from "../core/operations.js";
 
 // matrix-js-sdk (loglevel) and the rust-crypto WASM tracing layer write
 // verbose logs straight to console.log/debug/info/trace (stdout by default)
@@ -60,10 +55,6 @@ const EXT_MIMETYPES: Record<string, string> = {
 
 function guessMimetype(filePath: string): string {
   return EXT_MIMETYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
-}
-
-function toArrayBuffer(buf: Buffer): ArrayBuffer {
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
 const program = new Command();
@@ -199,17 +190,17 @@ recovery
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const { recoveryKey } = await opened.storage.keys.setupRecovery();
+        const result = await core.setupRecovery(opened.storage);
         // Give any already-known megolm sessions a chance to actually reach
         // the server backup before this short-lived process exits — see
         // waitForBackupSettled's doc comment.
         await waitForBackupSettled(opened.storage);
         return {
-          json: { recoveryKey },
+          json: { ...result },
           text: [
             "Recovery Key (SAVE THIS — it is the only way to recover your files on a new device):",
             "",
-            recoveryKey,
+            result.recoveryKey,
           ].join("\n"),
         };
       } finally {
@@ -225,9 +216,9 @@ recovery
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const result = await opened.storage.keys.restoreFromRecoveryKey(recoveryKey);
+        const result = await core.restoreRecovery(opened.storage, recoveryKey);
         return {
-          json: result,
+          json: { ...result },
           text: `Restored ${result.imported}/${result.total} keys.`,
         };
       } finally {
@@ -249,10 +240,10 @@ folder
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const tree = await opened.storage.createTree(name);
+        const result = await core.createFolder(opened.storage, name);
         return {
-          json: { folderId: tree.id, name },
-          text: `Created folder "${name}" (${tree.id})`,
+          json: { folderId: result.id, name: result.name },
+          text: `Created folder "${result.name}" (${result.id})`,
         };
       } finally {
         await opened.close();
@@ -267,10 +258,7 @@ folder
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const trees = await opened.storage.listTrees();
-        const folders = trees
-          .filter((t) => t.isTopLevel)
-          .map((t) => ({ id: t.id, name: t.room.name }));
+        const folders = await core.listFolders(opened.storage);
         return {
           json: { folders },
           text:
@@ -291,10 +279,8 @@ folder
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        await opened.storage.getClient().joinRoom(folderId);
-        return { json: { folderId, joined: true }, text: `Joined folder ${folderId}` };
-      } catch (err) {
-        throw new CliError(`join failed: ${(err as Error).message}`);
+        const result = await core.joinFolder(opened.storage, folderId);
+        return { json: { ...result }, text: `Joined folder ${result.folderId}` };
       } finally {
         await opened.close();
       }
@@ -307,28 +293,19 @@ folder
   .option("--role <role>", "viewer or editor", "viewer")
   .action(async (folderId: string, userId: string, opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
+      // Validated here too (before openStorage/login is even attempted) so
+      // a bad --role fails fast exactly as before; core.shareFolder repeats
+      // the same check so it's still safe to call standalone (e.g. from a
+      // future UI) without this CLI-side pre-check.
       if (opts.role !== "viewer" && opts.role !== "editor") {
         throw new CliError(`invalid --role "${opts.role}" (must be viewer or editor)`);
       }
       const opened = await openStorage();
       try {
-        const tree = await requireTree(opened.storage, folderId);
-        try {
-          await tree.invite(userId);
-        } catch (err) {
-          // `folder share` doubles as "change an existing participant's
-          // role" (re-run with a different --role): inviting someone who's
-          // already a member is a 403 from the server, not a real failure —
-          // ignore it and still apply the role change below. Any other
-          // invite failure (e.g. unknown user) is a genuine error.
-          if (!/already in the room/i.test((err as Error).message)) {
-            throw err;
-          }
-        }
-        await tree.setPermissions(userId, opts.role);
+        const result = await core.shareFolder(opened.storage, folderId, userId, opts.role);
         return {
-          json: { folderId, userId, role: opts.role },
-          text: `Invited ${userId} to ${folderId} as ${opts.role}`,
+          json: { ...result },
+          text: `Invited ${result.userId} to ${result.folderId} as ${result.role}`,
         };
       } finally {
         await opened.close();
@@ -343,8 +320,7 @@ folder
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const tree = await requireTree(opened.storage, folderId);
-        const members = await opened.storage.listMembers(tree);
+        const members = await core.listMembers(opened.storage, folderId);
         return {
           json: { members },
           text: members.map((m) => `${m.userId}\t${m.role}\t${m.membership}`).join("\n"),
@@ -362,13 +338,8 @@ folder
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        await requireTree(opened.storage, folderId);
-        try {
-          await opened.storage.getClient().kick(folderId, userId, "unshared");
-        } catch (err) {
-          throw new CliError(`unshare failed: ${(err as Error).message}`);
-        }
-        return { json: { folderId, userId, removed: true }, text: `Removed ${userId} from ${folderId}` };
+        const result = await core.unshareFolder(opened.storage, folderId, userId);
+        return { json: { ...result }, text: `Removed ${result.userId} from ${result.folderId}` };
       } finally {
         await opened.close();
       }
@@ -392,13 +363,13 @@ file
       }
       const opened = await openStorage();
       try {
-        const tree = await requireTree(opened.storage, folderId);
         const name = opts.name ?? path.basename(filePath);
         const data = fs.readFileSync(filePath);
-        const fileId = await opened.storage.uploadFile(
-          tree,
+        const result = await core.uploadFile(
+          opened.storage,
+          folderId,
           name,
-          toArrayBuffer(data),
+          data,
           guessMimetype(filePath),
         );
         // If recovery/backup is already active for this account, give the
@@ -406,8 +377,8 @@ file
         // before this short-lived process exits.
         await waitForBackupSettled(opened.storage);
         return {
-          json: { fileId, name },
-          text: `Uploaded "${name}" as ${fileId}`,
+          json: { fileId: result.id, name: result.name },
+          text: `Uploaded "${result.name}" as ${result.id}`,
         };
       } finally {
         await opened.close();
@@ -422,8 +393,7 @@ file
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const tree = await requireTree(opened.storage, folderId);
-        const files = tree.listFiles().map((f) => ({ id: f.id, name: f.getName() }));
+        const files = await core.listFiles(opened.storage, folderId);
         return {
           json: { files },
           text: files.length === 0 ? "(no files)" : files.map((f) => `${f.id}\t${f.name}`).join("\n"),
@@ -441,18 +411,11 @@ file
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const tree = await requireTree(opened.storage, folderId);
-        const branch = await requireFile(tree, fileId);
-        let result;
-        try {
-          result = await opened.storage.downloadFile(branch);
-        } catch (err) {
-          throw new CliError(`download failed: ${(err as Error).message}`);
-        }
-        fs.writeFileSync(destPath, Buffer.from(result.data));
+        const result = await core.downloadFile(opened.storage, folderId, fileId);
+        fs.writeFileSync(destPath, Buffer.from(result.bytes));
         return {
-          json: { path: destPath, bytes: result.data.byteLength, mimetype: result.mimetype },
-          text: `Downloaded ${result.data.byteLength} bytes to ${destPath}`,
+          json: { path: destPath, bytes: result.bytes.byteLength, mimetype: result.mimetype },
+          text: `Downloaded ${result.bytes.byteLength} bytes to ${destPath}`,
         };
       } finally {
         await opened.close();

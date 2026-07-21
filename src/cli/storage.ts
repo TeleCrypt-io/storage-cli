@@ -1,10 +1,9 @@
 import "fake-indexeddb/auto";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/index.js";
-import { FileBranch, SecureStorage, TreeSpace } from "../SecureStorage.js";
+import { SecureStorage } from "../SecureStorage.js";
 import { cryptoSnapshotPath, ensureProfileDir, profileDir, readSession, Session } from "./profile.js";
 import { persistCryptoStore, restoreCryptoStore } from "./cryptoSnapshot.js";
 import { CliError } from "./errors.js";
-import { waitForCondition } from "./poll.js";
 
 export interface OpenedStorage {
   storage: SecureStorage;
@@ -50,34 +49,6 @@ export async function openStorage(dir: string = profileDir()): Promise<OpenedSto
   };
 
   return { storage, session, close };
-}
-
-/**
- * Looks up a folder by ID, polling briefly: a room this same account just
- * created (or was just invited to, by another process) can be momentarily
- * absent from a from-scratch `/sync` before showing up moments later — real
- * async settling, not an instant "not found". Throws a clean CliError if the
- * folder still isn't visible once the poll times out.
- */
-export async function requireTree(storage: SecureStorage, folderId: string): Promise<TreeSpace> {
-  try {
-    return await waitForCondition(() => storage.getTree(folderId), {
-      timeoutMs: 15000,
-    });
-  } catch {
-    throw new CliError(`folder not found: ${folderId}`);
-  }
-}
-
-/** As `requireTree`, but for a specific file within an already-resolved
- * folder — covers the same settling window for a file another process just
- * uploaded. */
-export async function requireFile(tree: TreeSpace, fileId: string): Promise<FileBranch> {
-  try {
-    return await waitForCondition(() => tree.getFile(fileId), { timeoutMs: 15000 });
-  } catch {
-    throw new CliError(`file not found: ${fileId}`);
-  }
 }
 
 /**

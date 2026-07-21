@@ -1,9 +1,3 @@
-/** A user-facing CLI error: message goes straight to stderr (JSON or text),
- * never a stack trace. Thrown for expected failure conditions (bad login,
- * wrong recovery key, missing file, not logged in, ...). */
-export class CliError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CliError";
-  }
-}
+// Re-homed under src/core/errors.ts (platform-agnostic — no Node/CLI
+// dependencies), re-exported here so existing CLI imports keep working.
+export { CliError } from "../core/errors.js";
