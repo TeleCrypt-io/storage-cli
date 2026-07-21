@@ -11,14 +11,14 @@ export interface Session {
 
 /**
  * Resolves the profile directory: everything this CLI persists (session,
- * crypto store) lives here. Overridable via SECURE_STORAGE_HOME so tests can
- * give each simulated user/device its own isolated profile. Defaults to
- * ~/.secure-storage for normal interactive use.
+ * crypto store) lives here. Overridable via TELECRYPT_IO_STORAGE_HOME so
+ * tests can give each simulated user/device its own isolated profile.
+ * Defaults to ~/.telecrypt-io/storage for normal interactive use.
  */
 export function profileDir(): string {
-  const home = process.env.SECURE_STORAGE_HOME;
+  const home = process.env.TELECRYPT_IO_STORAGE_HOME;
   if (home && home.trim() !== "") return home;
-  return path.join(os.homedir(), ".secure-storage");
+  return path.join(os.homedir(), ".telecrypt-io", "storage");
 }
 
 export function sessionPath(dir: string = profileDir()): string {

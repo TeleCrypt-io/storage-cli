@@ -19,8 +19,8 @@ async function registerProfile(
   const username = randomUser(prefix);
   const password = "pw_" + Math.random().toString(36).slice(2, 10);
   const res = await cliJson(
-    ["register", "--homeserver", HOMESERVER, "--user", username, "--password", password],
-    { SECURE_STORAGE_HOME: dir },
+    ["storage", "register", "--homeserver", HOMESERVER, "--user", username, "--password", password],
+    { TELECRYPT_IO_STORAGE_HOME: dir },
   );
   expect(res.code).toBe(0);
   return { userId: res.json.userId as string, username, password };
@@ -31,17 +31,17 @@ describe("CLI", () => {
     "CLI.1 cross-process persistence: upload in one process, download in a separate one, byte-identical",
     async () => {
       const dir = freshProfileDir("persist");
-      const env = { SECURE_STORAGE_HOME: dir };
+      const env = { TELECRYPT_IO_STORAGE_HOME: dir };
 
       // Every step below is its OWN subprocess — this is the mandatory proof
       // that the Matrix session + megolm keys survive across process exits.
       await registerProfile(dir, "persist");
 
-      const recoverySetup = await cliJson(["recovery", "setup"], env);
+      const recoverySetup = await cliJson(["storage", "recovery", "setup"], env);
       expect(recoverySetup.code).toBe(0);
       expect(typeof recoverySetup.json.recoveryKey).toBe("string");
 
-      const folderRes = await cliJson(["folder", "create", "PersistFolder"], env);
+      const folderRes = await cliJson(["storage", "folder", "create", "PersistFolder"], env);
       expect(folderRes.code).toBe(0);
       const folderId = folderRes.json.folderId as string;
       expect(folderId).toBeTruthy();
@@ -50,7 +50,7 @@ describe("CLI", () => {
       const originalBytes = `cross-process proof ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
 
-      const uploadRes = await cliJson(["file", "upload", folderId, srcPath], env);
+      const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], env);
       expect(uploadRes.code).toBe(0);
       const fileId = uploadRes.json.fileId as string;
       expect(fileId).toBeTruthy();
@@ -60,7 +60,7 @@ describe("CLI", () => {
       // would throw a decryption error (empty megolm store).
       const destPath = path.join(dir, "downloaded.txt");
       const downloadRes = await cliJson(
-        ["file", "download", folderId, fileId, destPath],
+        ["storage", "file", "download", folderId, fileId, destPath],
         env,
       );
       expect(downloadRes.code).toBe(0);
@@ -77,33 +77,33 @@ describe("CLI", () => {
       const dirA = freshProfileDir("multiA");
       const dirB = freshProfileDir("multiB");
       const dirC = freshProfileDir("multiC");
-      const envA = { SECURE_STORAGE_HOME: dirA };
-      const envB = { SECURE_STORAGE_HOME: dirB };
-      const envC = { SECURE_STORAGE_HOME: dirC };
+      const envA = { TELECRYPT_IO_STORAGE_HOME: dirA };
+      const envB = { TELECRYPT_IO_STORAGE_HOME: dirB };
+      const envC = { TELECRYPT_IO_STORAGE_HOME: dirC };
 
       await registerProfile(dirA, "multiA");
       const userB = await registerProfile(dirB, "multiB");
       await registerProfile(dirC, "multiC");
 
-      const folderRes = await cliJson(["folder", "create", "Shared"], envA);
+      const folderRes = await cliJson(["storage", "folder", "create", "Shared"], envA);
       expect(folderRes.code).toBe(0);
       const folderId = folderRes.json.folderId as string;
 
       const shareRes = await cliJson(
-        ["folder", "share", folderId, userB.userId, "--role", "editor"],
+        ["storage", "folder", "share", folderId, userB.userId, "--role", "editor"],
         envA,
       );
       expect(shareRes.code).toBe(0);
       expect(shareRes.json).toMatchObject({ folderId, userId: userB.userId, role: "editor" });
 
-      const joinRes = await cliJson(["folder", "join", folderId], envB);
+      const joinRes = await cliJson(["storage", "folder", "join", folderId], envB);
       expect(joinRes.code).toBe(0);
 
       const srcPath = path.join(dirB, "from-b.txt");
       const originalBytes = `B's file ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
 
-      const uploadRes = await cliJson(["file", "upload", folderId, srcPath], envB);
+      const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], envB);
       expect(uploadRes.code).toBe(0);
       const fileId = uploadRes.json.fileId as string;
 
@@ -115,7 +115,7 @@ describe("CLI", () => {
       const destPath = path.join(dirA, "from-b-downloaded.txt");
       const downloadResult = await waitFor(
         async () => {
-          const res = await cliJson(["file", "download", folderId, fileId, destPath], envA);
+          const res = await cliJson(["storage", "file", "download", folderId, fileId, destPath], envA);
           return res.code === 0 ? res : null;
         },
         { label: "A decrypts B's file", timeoutMs: 30000, intervalMs: 1500 },
@@ -125,7 +125,7 @@ describe("CLI", () => {
       expect(downloadedBytes).toBe(originalBytes);
 
       // C was never invited: cannot see the folder at all.
-      const listC = await cliJson(["folder", "list"], envC);
+      const listC = await cliJson(["storage", "folder", "list"], envC);
       expect(listC.code).toBe(0);
       const folders = listC.json.folders as { id: string }[];
       expect(folders.some((f) => f.id === folderId)).toBe(false);
@@ -138,21 +138,21 @@ describe("CLI", () => {
     async () => {
       const dirA = freshProfileDir("membersA");
       const dirB = freshProfileDir("membersB");
-      const envA = { SECURE_STORAGE_HOME: dirA };
-      const envB = { SECURE_STORAGE_HOME: dirB };
+      const envA = { TELECRYPT_IO_STORAGE_HOME: dirA };
+      const envB = { TELECRYPT_IO_STORAGE_HOME: dirB };
 
       const userA = await registerProfile(dirA, "membersA");
       const userB = await registerProfile(dirB, "membersB");
 
-      const folderRes = await cliJson(["folder", "create", "Roles"], envA);
+      const folderRes = await cliJson(["storage", "folder", "create", "Roles"], envA);
       const folderId = folderRes.json.folderId as string;
 
-      await cliJson(["folder", "share", folderId, userB.userId, "--role", "viewer"], envA);
-      await cliJson(["folder", "join", folderId], envB);
+      await cliJson(["storage", "folder", "share", folderId, userB.userId, "--role", "viewer"], envA);
+      await cliJson(["storage", "folder", "join", folderId], envB);
 
       const membersRes = await waitFor(
         async () => {
-          const res = await cliJson(["folder", "members", folderId], envA);
+          const res = await cliJson(["storage", "folder", "members", folderId], envA);
           const members = (res.json.members as { userId: string; role: string }[]) ?? [];
           return members.length >= 2 ? res : null;
         },
@@ -168,10 +168,10 @@ describe("CLI", () => {
       expect(viewer?.membership).toBe("join");
 
       // Promote to editor and confirm `folder members` reflects it.
-      await cliJson(["folder", "share", folderId, userB.userId, "--role", "editor"], envA);
+      await cliJson(["storage", "folder", "share", folderId, userB.userId, "--role", "editor"], envA);
       const updated = await waitFor(
         async () => {
-          const res = await cliJson(["folder", "members", folderId], envA);
+          const res = await cliJson(["storage", "folder", "members", folderId], envA);
           const m = (res.json.members as { userId: string; role: string }[]).find(
             (x) => x.userId === userB.userId,
           );
@@ -191,20 +191,20 @@ describe("CLI", () => {
     "CLI.4 recovery restore on a fresh profile (new device) recovers a file via the CLI",
     async () => {
       const dir1 = freshProfileDir("recoverDev1");
-      const env1 = { SECURE_STORAGE_HOME: dir1 };
+      const env1 = { TELECRYPT_IO_STORAGE_HOME: dir1 };
 
       const user = await registerProfile(dir1, "recover");
 
-      const folderRes = await cliJson(["folder", "create", "RecoverMe"], env1);
+      const folderRes = await cliJson(["storage", "folder", "create", "RecoverMe"], env1);
       const folderId = folderRes.json.folderId as string;
 
       const srcPath = path.join(dir1, "important.txt");
       const originalBytes = `recoverable content ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
-      const uploadRes = await cliJson(["file", "upload", folderId, srcPath], env1);
+      const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], env1);
       const fileId = uploadRes.json.fileId as string;
 
-      const setupRes = await cliJson(["recovery", "setup"], env1);
+      const setupRes = await cliJson(["storage", "recovery", "setup"], env1);
       expect(setupRes.code).toBe(0);
       const recoveryKey = setupRes.json.recoveryKey as string;
       expect(recoveryKey).toBeTruthy();
@@ -232,9 +232,10 @@ describe("CLI", () => {
       // A genuinely new device for the SAME account: fresh profile dir (empty
       // crypto store) + `login` (mints a brand-new device_id/access_token).
       const dir2 = freshProfileDir("recoverDev2");
-      const env2 = { SECURE_STORAGE_HOME: dir2 };
+      const env2 = { TELECRYPT_IO_STORAGE_HOME: dir2 };
       const loginRes = await cliJson(
         [
+          "storage",
           "login",
           "--homeserver",
           HOMESERVER,
@@ -256,7 +257,7 @@ describe("CLI", () => {
           // Poll until the folder/file are at least *visible* to device 2
           // (independent of decryption), so the eventual failure below is a
           // genuine decryption failure, not "folder not found yet".
-          const listing = await cliJson(["file", "list", folderId], env2);
+          const listing = await cliJson(["storage", "file", "list", folderId], env2);
           const files = (listing.json.files as { id: string }[] | undefined) ?? [];
           return files.some((f) => f.id === fileId) ? listing : null;
         },
@@ -264,20 +265,20 @@ describe("CLI", () => {
       );
       expect(beforeRestore.code).toBe(0);
       const failedDownload = await cliJson(
-        ["file", "download", folderId, fileId, destPath],
+        ["storage", "file", "download", folderId, fileId, destPath],
         env2,
       );
       expect(failedDownload.code).not.toBe(0);
 
       // Now restore from the Recovery Key and confirm the file recovers,
       // byte-identical to what device 1 originally uploaded.
-      const restoreRes = await cliJson(["recovery", "restore", recoveryKey], env2);
+      const restoreRes = await cliJson(["storage", "recovery", "restore", recoveryKey], env2);
       expect(restoreRes.code).toBe(0);
       expect(restoreRes.json.imported as number).toBeGreaterThan(0);
 
       const recovered = await waitFor(
         async () => {
-          const res = await cliJson(["file", "download", folderId, fileId, destPath], env2);
+          const res = await cliJson(["storage", "file", "download", folderId, fileId, destPath], env2);
           return res.code === 0 ? res : null;
         },
         { label: "device 2 decrypts after restore", timeoutMs: 20000 },
@@ -293,6 +294,7 @@ describe("CLI", () => {
       const dir = freshProfileDir("badlogin");
       const res = await cliJson(
         [
+          "storage",
           "login",
           "--homeserver",
           HOMESERVER,
@@ -301,7 +303,7 @@ describe("CLI", () => {
           "--password",
           "wrong-password",
         ],
-        { SECURE_STORAGE_HOME: dir },
+        { TELECRYPT_IO_STORAGE_HOME: dir },
       );
       expect(res.code).not.toBe(0);
       expect(typeof res.json.error).toBe("string");
@@ -315,9 +317,9 @@ describe("CLI", () => {
     it("garbage recovery key", async () => {
       const dir = freshProfileDir("badrecovery");
       await registerProfile(dir, "badrecovery");
-      const env = { SECURE_STORAGE_HOME: dir };
+      const env = { TELECRYPT_IO_STORAGE_HOME: dir };
 
-      const res = await cliJson(["recovery", "restore", "not a real recovery key"], env);
+      const res = await cliJson(["storage", "recovery", "restore", "not a real recovery key"], env);
       expect(res.code).not.toBe(0);
       expect(typeof res.json.error).toBe("string");
       expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
@@ -328,13 +330,13 @@ describe("CLI", () => {
       async () => {
         const dir = freshProfileDir("missingfile");
         await registerProfile(dir, "missingfile");
-        const env = { SECURE_STORAGE_HOME: dir };
+        const env = { TELECRYPT_IO_STORAGE_HOME: dir };
 
-        const folderRes = await cliJson(["folder", "create", "Empty"], env);
+        const folderRes = await cliJson(["storage", "folder", "create", "Empty"], env);
         const folderId = folderRes.json.folderId as string;
 
         const res = await cliJson(
-          ["file", "download", folderId, "$doesnotexist12345", path.join(dir, "out.txt")],
+          ["storage", "file", "download", folderId, "$doesnotexist12345", path.join(dir, "out.txt")],
           env,
         );
         expect(res.code).not.toBe(0);
@@ -346,14 +348,14 @@ describe("CLI", () => {
 
     it("whoami with no session", async () => {
       const dir = freshProfileDir("nosession");
-      const res = await cliJson(["whoami"], { SECURE_STORAGE_HOME: dir });
+      const res = await cliJson(["storage", "whoami"], { TELECRYPT_IO_STORAGE_HOME: dir });
       expect(res.code).not.toBe(0);
       expect(res.json.error).toBe("not logged in");
     });
 
     it("non-json mode also exits non-zero with a clean single-line error, no stack trace", async () => {
       const dir = freshProfileDir("textmode");
-      const result = await runCli(["whoami"], { SECURE_STORAGE_HOME: dir });
+      const result = await runCli(["storage", "whoami"], { TELECRYPT_IO_STORAGE_HOME: dir });
       expect(result.code).not.toBe(0);
       expect(result.stderr.trim()).toBe("Error: not logged in");
     });

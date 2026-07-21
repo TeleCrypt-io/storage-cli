@@ -17,13 +17,13 @@ import * as core from "../core/operations.js";
 // alone, that corrupts BOTH halves of the CLI's output contract: stdout must
 // be exactly one line (human text or --json payload), and stderr under
 // --json must be exactly one `{"error": "..."}` line for a test (or script)
-// to parse. Silence all of them here, before SecureStorage.create() ever
+// to parse. Silence all of them here, before TeleCryptIOStorage.create() ever
 // triggers rust-crypto initialisation; the CLI's own output always goes
 // through process.stdout.write/process.stderr.write directly (see
 // output.ts), never console.*, so this can't swallow anything we emit
-// ourselves. Set SECURE_STORAGE_DEBUG=1 to see the SDK's logs again (all
-// routed to stderr, labelled) when troubleshooting.
-if (!process.env.SECURE_STORAGE_DEBUG) {
+// ourselves. Set TELECRYPT_IO_STORAGE_DEBUG=1 to see the SDK's logs again
+// (all routed to stderr, labelled) when troubleshooting.
+if (!process.env.TELECRYPT_IO_STORAGE_DEBUG) {
   console.log = () => {};
   console.debug = () => {};
   console.info = () => {};
@@ -59,16 +59,20 @@ function guessMimetype(filePath: string): string {
 
 const program = new Command();
 program
-  .name("secure-storage")
-  .description("CLI for the TeleCrypt secure-storage E2EE file library")
+  .name("telecrypt-io")
+  .description("TeleCrypt.io CLI")
   .option("--json", "machine-readable JSON output")
   .showHelpAfterError();
+
+const storage = program
+  .command("storage")
+  .description("End-to-end encrypted file storage on Matrix");
 
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 
-program
+storage
   .command("login")
   .description("Log in and persist the session + crypto store to the profile")
   .requiredOption("--homeserver <url>", "Matrix homeserver base URL")
@@ -102,7 +106,7 @@ program
     });
   });
 
-program
+storage
   .command("register")
   .description("Register a new account (dev/test convenience), then log in")
   .requiredOption("--homeserver <url>", "Matrix homeserver base URL")
@@ -145,7 +149,7 @@ program
     });
   });
 
-program
+storage
   .command("whoami")
   .description("Print the current session identity")
   .action(async (_opts, command: Command) => {
@@ -159,7 +163,7 @@ program
     });
   });
 
-program
+storage
   .command("logout")
   .description("Clear the local profile (session + crypto store)")
   .action(async (_opts, command: Command) => {
@@ -181,7 +185,7 @@ program
 // Recovery (Layer 2)
 // ---------------------------------------------------------------------------
 
-const recovery = program.command("recovery").description("Server-side key backup / recovery");
+const recovery = storage.command("recovery").description("Server-side key backup / recovery");
 
 recovery
   .command("setup")
@@ -231,7 +235,7 @@ recovery
 // Folders
 // ---------------------------------------------------------------------------
 
-const folder = program.command("folder").description("Shared folder operations");
+const folder = storage.command("folder").description("Shared folder operations");
 
 folder
   .command("create <name>")
@@ -350,7 +354,7 @@ folder
 // Files
 // ---------------------------------------------------------------------------
 
-const file = program.command("file").description("File operations within a folder");
+const file = storage.command("file").description("File operations within a folder");
 
 file
   .command("upload <folderId> <path>")

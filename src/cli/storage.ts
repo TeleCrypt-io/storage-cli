@@ -1,12 +1,12 @@
 import "fake-indexeddb/auto";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/index.js";
-import { SecureStorage } from "../SecureStorage.js";
+import { TeleCryptIOStorage } from "../TeleCryptIOStorage.js";
 import { cryptoSnapshotPath, ensureProfileDir, profileDir, readSession, Session } from "./profile.js";
 import { persistCryptoStore, restoreCryptoStore } from "./cryptoSnapshot.js";
 import { CliError } from "./errors.js";
 
 export interface OpenedStorage {
-  storage: SecureStorage;
+  storage: TeleCryptIOStorage;
   session: Session;
   /** Persists the crypto store back to disk and stops the client. Call this
    * in a `finally` block around every command that opens storage, so the
@@ -17,20 +17,20 @@ export interface OpenedStorage {
 }
 
 /**
- * Opens a SecureStorage bound to the current profile's session, having first
+ * Opens a TeleCryptIOStorage bound to the current profile's session, having first
  * restored the crypto store snapshot (if any) from a previous CLI
  * invocation. Throws CliError("not logged in") if there is no session.
  */
 export async function openStorage(dir: string = profileDir()): Promise<OpenedStorage> {
   const session = readSession(dir);
   if (!session) {
-    throw new CliError("not logged in — run `secure-storage login` first");
+    throw new CliError("not logged in — run `telecrypt-io storage login` first");
   }
 
   const snapshotPath = cryptoSnapshotPath(dir);
   await restoreCryptoStore(snapshotPath);
 
-  const storage = await SecureStorage.create({
+  const storage = await TeleCryptIOStorage.create({
     baseUrl: session.homeserver,
     userId: session.userId,
     accessToken: session.accessToken,
@@ -65,7 +65,7 @@ export async function openStorage(dir: string = profileDir()): Promise<OpenedSto
  * correctness gate on the command's primary result.
  */
 export async function waitForBackupSettled(
-  storage: SecureStorage,
+  storage: TeleCryptIOStorage,
   timeoutMs = 20000,
 ): Promise<void> {
   const active = await storage.keys.isRecoverySetup();
@@ -98,7 +98,7 @@ export async function initStorageForNewSession(
   ensureProfileDir(dir);
   const snapshotPath = cryptoSnapshotPath(dir);
 
-  const storage = await SecureStorage.create({
+  const storage = await TeleCryptIOStorage.create({
     baseUrl: session.homeserver,
     userId: session.userId,
     accessToken: session.accessToken,

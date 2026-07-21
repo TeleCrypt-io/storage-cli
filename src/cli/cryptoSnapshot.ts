@@ -1,7 +1,7 @@
 /**
  * Cross-process crypto persistence (THE central challenge — see docs/CLI_SPEC.md).
  *
- * A CLI runs each command as a separate OS process. `SecureStorage.create()`
+ * A CLI runs each command as a separate OS process. `TeleCryptIOStorage.create()`
  * initialises rust-crypto with `useIndexedDB: true`, but in Node the only
  * IndexedDB available is `fake-indexeddb`, which is a pure in-memory
  * implementation — it evaporates when the process exits. Left alone, every

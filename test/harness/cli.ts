@@ -58,5 +58,5 @@ export async function cliJson(
 
 /** A fresh, isolated profile directory for one simulated user/device. */
 export function freshProfileDir(prefix: string): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `secure-storage-${prefix}-`));
+  return fs.mkdtempSync(path.join(os.tmpdir(), `telecrypt-io-storage-${prefix}-`));
 }
