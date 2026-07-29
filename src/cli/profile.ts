@@ -9,7 +9,7 @@ export interface Session {
   accessToken: string;
   /**
    * Present only when logged in via `storage login --oidc` (device-code
-   * grant against MAS — see src/cli/oidc.ts and docs/OAUTH_SPEC.md Part C).
+   * grant against MAS; see src/cli/oidc.ts).
    * Absent for a plain password login. `oidcTokenEndpoint` is persisted
    * directly (rather than re-discovered from `oidcIssuer` on every command)
    * so reusing/refreshing the session never needs OIDC discovery again —

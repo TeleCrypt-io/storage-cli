@@ -20,8 +20,7 @@
  * `@matrix-org/matrix-sdk-crypto-wasm`'s own environment detection
  * (`typeof window !== "undefined"` → assumes a real browser IndexedDB is
  * available) fails with "Unsupported environment" once `window` exists at
- * all, even as an empty-ish stub, since the CLI's whole crypto-persistence
- * design (docs/DECISIONS.md D1) depends on Node being detected as Node
+ * all, even as an empty-ish stub, since CLI crypto persistence depends on Node being detected as Node
  * (`fake-indexeddb`), not as a browser. Confirmed by direct testing:
  * `initRustCrypto()` broke the moment `globalThis.window` was defined
  * unconditionally at module load.

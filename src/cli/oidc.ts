@@ -1,8 +1,7 @@
 /**
  * CLI-only OIDC/MAS adapter: device-code login (RFC 8628) against a
  * homeserver's delegated auth service (MAS). Node-only (child_process for
- * best-effort browser open) — this is exactly the kind of platform-specific
- * bit docs/OAUTH_SPEC.md Part B says stays out of `src/core/`; the actual
+ * best-effort browser open). Platform-specific behavior stays out of `src/core/`; the actual
  * OIDC protocol calls all live in `src/core/oidc.ts` and are shared with the
  * UI's PKCE adapter.
  */
@@ -82,8 +81,7 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
     // Device-code flow never redirects a browser back to us, so this URI is
     // never actually dereferenced — it's a DCR-schema placeholder only.
     // Unverified against production MAS's DCR policy (only exercised here
-    // against the local dev/test MAS, which allows insecure/mismatched
-    // URIs); see docs/DECISIONS.md D6.
+    // against the local dev/test MAS, which allows insecure/mismatched URIs).
     redirectUris: ["http://localhost:0/"],
     contacts: undefined,
     tosUri: undefined,

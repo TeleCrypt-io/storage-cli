@@ -1,5 +1,5 @@
 /**
- * Cross-process crypto persistence (THE central challenge — see docs/CLI_SPEC.md).
+ * Cross-process crypto persistence for the process-per-command CLI.
  *
  * A CLI runs each command as a separate OS process. `TeleCryptIOStorage.create()`
  * initialises rust-crypto with `useIndexedDB: true`, but in Node the only

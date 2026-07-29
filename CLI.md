@@ -6,8 +6,8 @@ entirely by the library (this CLI does not reimplement crypto or Matrix logic). 
 commands live under the `storage` namespace (`telecrypt-io storage ...`), leaving room for other
 TeleCrypt.io command groups to be added under the same `telecrypt-io` binary later.
 
-See `STATUS.md` ("Phase 6") for how crypto state survives across the separate OS processes a
-CLI necessarily runs as, and for the library-level bugs this work found and fixed.
+Crypto state is persisted in the selected profile so separate CLI processes can reopen the same
+encrypted session.
 
 ## Setup
 

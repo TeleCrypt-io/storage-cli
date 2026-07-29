@@ -19,8 +19,8 @@ function randomUser(prefix: string): string {
  * profile dir, returning its userId + the password (needed later for a
  * fresh-device login in CLI.4).
  *
- * The throwaway stack's Synapse delegates auth to a local MAS (see
- * docs/DECISIONS.md D6), so the CLI's own `storage register` command (which
+ * The throwaway stack's Synapse delegates auth to a local MAS, so the CLI's
+ * own `storage register` command (which
  * still does a plain `POST /_matrix/client/v3/register`) no longer works
  * against it — Synapse refuses that request once delegated ("Registration
  * has been disabled"). That command's own implementation is untouched and
