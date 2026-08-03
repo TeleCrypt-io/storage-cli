@@ -5,9 +5,9 @@ The command-line interface for TeleCrypt.io end-to-end encrypted Matrix storage.
 It consumes the public `@telecrypt-io/storage` library and provides the `telecrypt-io storage`
 command group: login, recovery, shared folders, uploads, and downloads.
 
-**Status:** unreleased migration source. The existing combined
-`@telecrypt-io/storage@0.1.3` package remains unchanged; the standalone CLI will be released as
-an exact GitHub Release artifact, never published to the NPM registry.
+**Distribution:** the standalone CLI is available only as an exact
+[GitHub Release](https://github.com/TeleCrypt-io/storage-cli/releases), never from the NPM
+registry. The existing combined `@telecrypt-io/storage@0.1.3` package remains unchanged.
 
 ## Install
 
