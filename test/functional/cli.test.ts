@@ -312,7 +312,82 @@ describe("CLI", () => {
     90000,
   );
 
-  describe("CLI.5 error paths: clean non-zero exit + JSON error, no stack traces", () => {
+  it(
+    "CLI.5 UI-equivalent tree operations: subfolders and files can be created, renamed, listed, and deleted",
+    async () => {
+      const dir = freshProfileDir("tree");
+      const env = { TELECRYPT_IO_STORAGE_HOME: dir };
+      await registerProfile(dir, "tree");
+
+      const parent = await cliJson(["storage", "folder", "create", "Parent"], env);
+      expect(parent.code).toBe(0);
+      const parentId = parent.json.folderId as string;
+
+      const child = await cliJson(
+        ["storage", "folder", "subfolder", "create", parentId, "Child"],
+        env,
+      );
+      expect(child.code).toBe(0);
+      const childId = child.json.id as string;
+
+      const initialSubfolders = await cliJson(
+        ["storage", "folder", "subfolder", "list", parentId],
+        env,
+      );
+      expect(initialSubfolders.code).toBe(0);
+      expect(initialSubfolders.json.folders).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: childId, name: "Child" })]),
+      );
+
+      const renameChild = await cliJson(
+        ["storage", "folder", "rename", childId, "Child Renamed"],
+        env,
+      );
+      expect(renameChild.code).toBe(0);
+      expect(renameChild.json).toMatchObject({ id: childId, name: "Child Renamed" });
+
+      const source = path.join(dir, "before-rename.txt");
+      fs.writeFileSync(source, `tree operation proof ${Math.random()}`);
+      const upload = await cliJson(["storage", "file", "upload", parentId, source], env);
+      expect(upload.code).toBe(0);
+      const fileId = upload.json.fileId as string;
+
+      const renameFile = await cliJson(
+        ["storage", "file", "rename", parentId, fileId, "after-rename.txt"],
+        env,
+      );
+      expect(renameFile.code).toBe(0);
+      expect(renameFile.json).toMatchObject({ id: fileId, name: "after-rename.txt" });
+
+      const filesAfterRename = await cliJson(["storage", "file", "list", parentId], env);
+      expect(filesAfterRename.code).toBe(0);
+      expect(filesAfterRename.json.files).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: fileId, name: "after-rename.txt" })]),
+      );
+
+      const deleteFile = await cliJson(["storage", "file", "delete", parentId, fileId], env);
+      expect(deleteFile.code).toBe(0);
+      expect(deleteFile.json).toMatchObject({ id: fileId, deleted: true });
+
+      const deleteChild = await cliJson(["storage", "folder", "delete", childId], env);
+      expect(deleteChild.code).toBe(0);
+      expect(deleteChild.json).toMatchObject({ id: childId, deleted: true });
+
+      const renameParent = await cliJson(
+        ["storage", "folder", "rename", parentId, "Parent Renamed"],
+        env,
+      );
+      expect(renameParent.code).toBe(0);
+      expect(renameParent.json).toMatchObject({ id: parentId, name: "Parent Renamed" });
+
+      const deleteParent = await cliJson(["storage", "folder", "delete", parentId], env);
+      expect(deleteParent.code).toBe(0);
+      expect(deleteParent.json).toMatchObject({ id: parentId, deleted: true });
+    },
+    60000,
+  );
+
+  describe("CLI.6 error paths: clean non-zero exit + JSON error, no stack traces", () => {
     it("bad login credentials", async () => {
       const dir = freshProfileDir("badlogin");
       const res = await cliJson(

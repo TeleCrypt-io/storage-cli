@@ -307,6 +307,49 @@ folder
     });
   });
 
+const subfolder = folder
+  .command("subfolder")
+  .description("Operations on subfolders within a shared folder");
+
+subfolder
+  .command("create <folderId> <name>")
+  .description("Create a subfolder within a shared folder")
+  .action(async (folderId: string, name: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.createSubfolder(opened.storage, folderId, name);
+        return {
+          json: { ...result },
+          text: `Created subfolder "${result.name}" (${result.id})`,
+        };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+subfolder
+  .command("list <folderId>")
+  .description("List direct subfolders of a shared folder")
+  .action(async (folderId: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const folders = await core.listSubfolders(opened.storage, folderId);
+        return {
+          json: { folders },
+          text:
+            folders.length === 0
+              ? "(no subfolders)"
+              : folders.map((f) => `${f.id}\t${f.name}`).join("\n"),
+        };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
 folder
   .command("join <folderId>")
   .description("Accept a pending folder invitation (join the room)")
@@ -375,6 +418,36 @@ folder
       try {
         const result = await core.unshareFolder(opened.storage, folderId, userId);
         return { json: { ...result }, text: `Removed ${result.userId} from ${result.folderId}` };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+folder
+  .command("rename <folderId> <name>")
+  .description("Rename a folder or subfolder")
+  .action(async (folderId: string, name: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.renameFolder(opened.storage, folderId, name);
+        return { json: { ...result }, text: `Renamed folder ${result.id} to "${result.name}"` };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+folder
+  .command("delete <folderId>")
+  .description("Delete a folder or subfolder")
+  .action(async (folderId: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.deleteFolder(opened.storage, folderId);
+        return { json: { ...result }, text: `Deleted folder ${result.id}` };
       } finally {
         await opened.close();
       }
@@ -452,6 +525,36 @@ file
           json: { path: destPath, bytes: result.bytes.byteLength, mimetype: result.mimetype },
           text: `Downloaded ${result.bytes.byteLength} bytes to ${destPath}`,
         };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+file
+  .command("rename <folderId> <fileId> <name>")
+  .description("Rename a file")
+  .action(async (folderId: string, fileId: string, name: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.renameFile(opened.storage, folderId, fileId, name);
+        return { json: { ...result }, text: `Renamed file ${result.id} to "${result.name}"` };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+file
+  .command("delete <folderId> <fileId>")
+  .description("Delete a file")
+  .action(async (folderId: string, fileId: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.deleteFile(opened.storage, folderId, fileId);
+        return { json: { ...result }, text: `Deleted file ${result.id}` };
       } finally {
         await opened.close();
       }

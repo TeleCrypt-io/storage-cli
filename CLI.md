@@ -66,10 +66,14 @@ telecrypt-io storage recovery restore <recoveryKey>   # on a new device/profile,
 ```sh
 telecrypt-io storage folder create <name>
 telecrypt-io storage folder list
+telecrypt-io storage folder subfolder create <folderId> <name>
+telecrypt-io storage folder subfolder list <folderId>
 telecrypt-io storage folder share <folderId> <userId> [--role viewer|editor]   # default: viewer
 telecrypt-io storage folder join <folderId>            # accept a pending invite
 telecrypt-io storage folder members <folderId>         # participants + roles
 telecrypt-io storage folder unshare <folderId> <userId>
+telecrypt-io storage folder rename <folderId> <name>
+telecrypt-io storage folder delete <folderId>
 ```
 
 `folder share` can also be re-run against an existing participant to change their role.
@@ -80,6 +84,8 @@ telecrypt-io storage folder unshare <folderId> <userId>
 telecrypt-io storage file upload <folderId> <path> [--name <name>]
 telecrypt-io storage file list <folderId>
 telecrypt-io storage file download <folderId> <fileId> <destPath>
+telecrypt-io storage file rename <folderId> <fileId> <name>
+telecrypt-io storage file delete <folderId> <fileId>
 ```
 
 ## Example: two participants sharing a folder
