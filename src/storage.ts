@@ -1,10 +1,10 @@
 import "fake-indexeddb/auto";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/index.js";
-import { TeleCryptIOStorage } from "../TeleCryptIOStorage.js";
+import { TeleCryptIOStorage } from "@telecrypt-io/storage";
 import { cryptoSnapshotPath, ensureProfileDir, profileDir, readSession, writeSession, Session } from "./profile.js";
 import { persistCryptoStore, restoreCryptoStore } from "./cryptoSnapshot.js";
 import { CliError } from "./errors.js";
-import { buildTokenRefreshFunction } from "../core/oidc.js";
+import { buildTokenRefreshFunction } from "@telecrypt-io/storage/core";
 
 export interface OpenedStorage {
   storage: TeleCryptIOStorage;
@@ -20,13 +20,13 @@ export interface OpenedStorage {
 /**
  * Builds a TeleCryptIOStorage for the given session — plain password/access-
  * token sessions go through `create()`; sessions with an OIDC token set
- * (persisted by `storage login --oidc`, see src/cli/oidc.ts) go through
+ * (persisted by `storage login --oidc`, see src/oidc.ts) go through
  * `createFromOidc()` with a token refresh function wired to persist
  * refreshed tokens straight back to this profile's session.json, so a later
  * CLI invocation picks up the refreshed access token rather than the
  * (possibly now-expired) one this process started with. Needs no OIDC
  * discovery / `window` shim here — `oidcTokenEndpoint` was already resolved
- * and persisted at login time (see src/cli/oidc.ts).
+ * and persisted at login time (see src/oidc.ts).
  */
 async function buildStorageForSession(session: Session, dir: string): Promise<TeleCryptIOStorage> {
   if (!session.refreshToken || !session.oidcClientId || !session.oidcTokenEndpoint) {

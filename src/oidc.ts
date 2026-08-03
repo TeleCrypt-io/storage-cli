@@ -14,7 +14,7 @@ import {
   waitForDeviceCodeLogin,
   isDeviceAccessTokenError,
   whoAmI,
-} from "../core/oidc.js";
+} from "@telecrypt-io/storage/core";
 import { CliError } from "./errors.js";
 import type { Session } from "./profile.js";
 import { withOidcWindowShim } from "./oidcWindowPolyfill.js";
@@ -63,7 +63,7 @@ export interface DeviceCodeLoginHooks {
  * invocations can reuse + refresh it.
  */
 export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLoginHooks): Promise<Session> {
-  // See src/cli/oidcWindowPolyfill.ts: discovery is the one OIDC call that
+// See src/oidcWindowPolyfill.ts: discovery is the one OIDC call that
   // needs a `window` stub under Node, and the only place in the CLI it's
   // safe to install one — nothing crypto/WASM-related exists yet in this
   // process.

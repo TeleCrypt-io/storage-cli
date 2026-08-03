@@ -1,15 +1,15 @@
 # TeleCrypt.io Storage CLI
 
-> E2EE file storage and sharing on Matrix. Install globally with `npm i -g @telecrypt-io/storage`, then run `telecrypt-io storage` commands. Files are encrypted end-to-end; the server never sees plaintext. All commands support `--json` for machine-readable output.
+> E2EE file storage and sharing on Matrix. The staged CLI package is `@telecrypt-io/storage-cli` and provides `telecrypt-io storage` commands. Files are encrypted end-to-end; the server never sees plaintext. All commands support `--json` for machine-readable output.
 
 ## What it is
 
-TeleCrypt.io Storage is a CLI and web UI for encrypted file storage and sharing on Matrix homeservers. Files are encrypted locally before upload; the server stores only ciphertext. Sharing is by Matrix user ID (format: `@localpart:homeserver.io`). Essential for agents: save recovery keys (only way to recover on a new device), and understand that the server cannot decrypt your files.
+TeleCrypt.io Storage CLI is a command-line client for encrypted file storage and sharing on Matrix homeservers. Files are encrypted locally before upload; the server stores only ciphertext. Sharing is by Matrix user ID (format: `@localpart:homeserver.io`). Essential for agents: save recovery keys (only way to recover on a new device), and understand that the server cannot decrypt your files.
 
 ### Installation
 
 ```bash
-npm i -g @telecrypt-io/storage
+npm i -g @telecrypt-io/storage-cli
 ```
 
 ## CLI command tree

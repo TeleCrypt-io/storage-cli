@@ -26,7 +26,7 @@
  * unconditionally at module load.
  *
  * This is safe to use ONLY around `discoverOidcIssuer()`, and ONLY at OIDC
- * login time (`src/cli/oidc.ts`'s `runDeviceCodeLogin`) — the one call site
+ * login time (`src/oidc.ts`'s `runDeviceCodeLogin`) — the one call site
  * where it runs before any `TeleCryptIOStorage`/`MatrixClient`/rust-crypto
  * WASM exists in the process, so there is no concurrent WASM environment
  * check for the temporary stub to corrupt. Never wrap anything that runs

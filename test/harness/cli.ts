@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 const REPO_ROOT = process.cwd();
 const TSX_BIN = path.join(REPO_ROOT, "node_modules", ".bin", "tsx");
-const CLI_ENTRY = path.join(REPO_ROOT, "src", "cli", "index.ts");
+const CLI_ENTRY = path.join(REPO_ROOT, "src", "index.ts");
 
 export interface CliResult {
   code: number;

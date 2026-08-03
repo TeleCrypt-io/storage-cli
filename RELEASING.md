@@ -1,4 +1,4 @@
-# Releasing `@telecrypt-io/storage`
+# Releasing `@telecrypt-io/storage-cli`
 
 Publishing to npm is automated via GitHub Actions using **npm Trusted Publishing (OIDC)**.
 There is no npm token stored anywhere — no `NODE_AUTH_TOKEN` secret in this repo, nothing to
@@ -12,17 +12,24 @@ Before the first automated publish can succeed, someone with publish rights on t
 `@telecrypt-io` npm org must configure this package as npm expects for Trusted Publishing:
 
 1. The `telecrypt-io` npm org already exists.
-2. On npmjs.com, go to the `@telecrypt-io/storage` package's **Settings → Trusted Publisher**
+2. On npmjs.com, create or open the `@telecrypt-io/storage-cli` package's **Settings → Trusted Publisher**
    (if the package doesn't exist on npm yet, the first publish must be done manually — `npm
    publish` from a machine logged in as an org member with an authenticator — after which
    Trusted Publishing can be configured for all subsequent releases).
 3. Add a **GitHub Actions** trusted publisher pointing at:
-   - **Repository:** `TeleCrypt-io/secure-storage`
+   - **Repository:** `TeleCrypt-io/storage-cli`
    - **Workflow filename:** `publish.yml`
    - **Environment:** none required unless you choose to gate the job behind a GitHub
      Environment (not currently configured in the workflow)
 4. Save. From this point on, a push of any `v*` tag from this repo triggers `publish.yml`, which
    authenticates via OIDC (no token) and publishes with provenance.
+
+## Migration guard
+
+Do not create the first CLI release until the owner has reviewed the migration from the legacy
+binary bundled in `@telecrypt-io/storage@0.1.3`. The legacy package remains unchanged until that
+review is complete. The CLI depends on an exact published library version; never use a workspace,
+file, branch, or floating npm range as the release dependency.
 
 ## Release flow (routine, after the one-time setup)
 
@@ -44,7 +51,7 @@ Nothing else is required from a human for a routine release — steps 1–3 abov
 | Step | Automated? |
 |---|---|
 | Configuring npm to trust this repo's `publish.yml` (one-time) | **Human — npmjs.com UI** |
-| First publish of the package, if `@telecrypt-io/storage` doesn't exist on npm yet | **Human — manual `npm publish`** |
+| First publish of the package, if `@telecrypt-io/storage-cli` doesn't exist on npm yet | **Human — manual `npm publish`** |
 | Every release after that: build + publish on tag push | Automated (`.github/workflows/publish.yml`) |
 | Version bump + creating/pushing the git tag | **Human** (or a future release-automation step — not built yet) |
 

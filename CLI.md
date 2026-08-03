@@ -13,13 +13,13 @@ encrypted session.
 
 ```sh
 npm install
-npm run build        # produces dist/cli/index.js
+npm run build        # produces dist/index.js
 ```
 
 During development, run commands via `tsx` directly instead of building:
 
 ```sh
-npx tsx src/cli/index.ts storage <command> [args] [--json]
+npx tsx src/index.ts storage <command> [args] [--json]
 ```
 
 Or, after `npm run build` / `npm link`, as the `telecrypt-io` binary.
