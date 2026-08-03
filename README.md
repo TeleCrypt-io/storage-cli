@@ -18,7 +18,7 @@ npm install -g @telecrypt-io/storage-cli
 ```
 
 This installs the `telecrypt-io` executable. The library source is in
-[`TeleCrypt-io/telecrypt-io-storage-lib`](https://github.com/TeleCrypt-io/telecrypt-io-storage-lib).
+[`TeleCrypt-io/storage-sdk`](https://github.com/TeleCrypt-io/storage-sdk).
 
 ## Quick start
 
