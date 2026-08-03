@@ -24,7 +24,7 @@ jobs:
       - name: Require a tag matching the package version
         run: |
           expected_version="${GITHUB_REF_NAME#storage-cli-v}"
-          package_version="$(node -p \"require('./package.json').version\")"
+          package_version="$(node -e 'console.log(require("./package.json").version)')"
           test "$expected_version" = "$package_version"
 
       - name: Install exact dependencies
