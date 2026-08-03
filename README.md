@@ -1,22 +1,22 @@
 # TeleCrypt.io Storage CLI
 
-[![npm](https://img.shields.io/npm/v/@telecrypt-io/storage-cli)](https://www.npmjs.com/package/@telecrypt-io/storage-cli)
-
 The command-line interface for TeleCrypt.io end-to-end encrypted Matrix storage.
 
 It consumes the public `@telecrypt-io/storage` library and provides the `telecrypt-io storage`
 command group: login, recovery, shared folders, uploads, and downloads.
 
-**Status:** unreleased migration source. The existing
-`@telecrypt-io/storage@0.1.3` package remains the supported public install until the staged npm
-migration is completed.
+**Status:** unreleased migration source. The existing combined
+`@telecrypt-io/storage@0.1.3` package remains unchanged; the standalone CLI will be released as
+an exact GitHub Release artifact, never published to the NPM registry.
 
 ## Install
 
 ```bash
-npm install -g @telecrypt-io/storage-cli
+npm install -g https://github.com/TeleCrypt-io/storage-cli/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
 ```
 
+Replace `X.Y.Z` with an existing release version. `npm` is used only as the Node installer: the
+archive and its bundled runtime dependencies are fetched from GitHub, not from the NPM registry.
 This installs the `telecrypt-io` executable. The library source is in
 [`TeleCrypt-io/storage-sdk`](https://github.com/TeleCrypt-io/storage-sdk).
 
@@ -42,7 +42,7 @@ npm run synapse:down
 Tests run against a real local Synapse in podman, never against a production server.
 
 See [CLI.md](./CLI.md) for the full command reference and [RELEASING.md](./RELEASING.md) for the
-guarded npm release procedure.
+guarded GitHub Release procedure.
 
 ## Licence
 

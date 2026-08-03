@@ -1,0 +1,66 @@
+name: Release storage CLI
+
+on:
+  push:
+    tags: ["storage-cli-v*"]
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: "22.14.0"
+
+      - name: Require a tag matching the package version
+        run: |
+          expected_version="${GITHUB_REF_NAME#storage-cli-v}"
+          package_version="$(node -p \"require('./package.json').version\")"
+          test "$expected_version" = "$package_version"
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Verify and build
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Package a self-contained CLI archive
+        run: |
+          mkdir release
+          npm pack --ignore-scripts --pack-destination release
+          packed_archive="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$packed_archive"
+          mv "$packed_archive" "release/${GITHUB_REF_NAME}.tgz"
+          sha256sum "release/${GITHUB_REF_NAME}.tgz" > release/SHA256SUMS
+
+      - name: Verify offline global installation
+        run: |
+          install_prefix="$RUNNER_TEMP/storage-cli-install"
+          npm install --global --prefix "$install_prefix" --offline --ignore-scripts "${GITHUB_WORKSPACE}/release/${GITHUB_REF_NAME}.tgz"
+          "$install_prefix/bin/telecrypt-io" --help
+
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@v4.1.1
+        with:
+          subject-path: release/${{ github.ref_name }}.tgz
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "release/${GITHUB_REF_NAME}.tgz" \
+            release/SHA256SUMS

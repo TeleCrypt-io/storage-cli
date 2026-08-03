@@ -12,9 +12,14 @@
     "README.md",
     "LICENSE"
   ],
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
+  "bundleDependencies": [
+    "@telecrypt-io/storage",
+    "commander",
+    "fake-indexeddb",
+    "matrix-js-sdk"
+  ],
+  "engines": {
+    "node": ">=22.14.0 <23"
   },
   "scripts": {
     "build": "tsc",

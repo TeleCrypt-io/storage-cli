@@ -1,68 +1,40 @@
-# Releasing `@telecrypt-io/storage-cli`
+# Releasing `storage-cli`
 
-Publishing to npm is automated via GitHub Actions using **npm Trusted Publishing (OIDC)**.
-There is no npm token stored anywhere — no `NODE_AUTH_TOKEN` secret in this repo, nothing to
-rotate. The workflow (`.github/workflows/publish.yml`) authenticates to npm by presenting this
-specific GitHub Actions run's OIDC identity, and npm only accepts that identity because a human
-has explicitly told npmjs.com to trust it (the one-time setup below).
+`storage-cli` is distributed only as an immutable GitHub Release artifact. It is **not**
+published to the NPM registry and needs no NPM token, Trusted Publisher, or package settings.
 
-## One-time human setup (cannot be done from CI)
+Each release contains:
 
-Before the first automated publish can succeed, someone with publish rights on the
-`@telecrypt-io` npm org must configure this package as npm expects for Trusted Publishing:
+- `storage-cli-vX.Y.Z.tgz`: compiled CLI plus bundled, lockfile-resolved production dependencies;
+- `SHA256SUMS`: SHA-256 checksum for that archive.
+- a GitHub build-provenance attestation for the archive.
 
-1. The `telecrypt-io` npm org already exists.
-2. On npmjs.com, create or open the `@telecrypt-io/storage-cli` package's **Settings → Trusted Publisher**
-   (if the package doesn't exist on npm yet, the first publish must be done manually — `npm
-   publish` from a machine logged in as an org member with an authenticator — after which
-   Trusted Publishing can be configured for all subsequent releases).
-3. Add a **GitHub Actions** trusted publisher pointing at:
-   - **Repository:** `TeleCrypt-io/storage-cli`
-   - **Workflow filename:** `publish.yml`
-   - **Environment:** none required unless you choose to gate the job behind a GitHub
-     Environment (not currently configured in the workflow)
-4. Save. From this point on, a push of any `v*` tag from this repo triggers `publish.yml`, which
-   authenticates via OIDC (no token) and publishes with provenance.
+The archive can be installed directly with the standard Node installer:
 
-## Migration guard
+```sh
+npm install -g https://github.com/TeleCrypt-io/storage-cli/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
+```
 
-Do not create the first CLI release until the owner has reviewed the migration from the legacy
-binary bundled in `@telecrypt-io/storage@0.1.3`. The legacy package remains unchanged until that
-review is complete. The CLI depends on an exact published library version; never use a workspace,
-file, branch, or floating npm range as the release dependency.
+The package bundles its runtime dependencies, including the exact storage-library version. The
+installer therefore does not need to resolve packages from the NPM registry. Node 22.14 through
+22.x is required.
 
-## Release flow (routine, after the one-time setup)
+## Release flow
 
-1. Bump `version` in `package.json` (semver).
-2. Commit that change.
-3. Tag it and push the tag:
+1. Set the exact semver version in `package.json` and commit it.
+2. Verify `main` through the ordinary GitHub Actions workflow.
+3. Create and push a fresh immutable tag whose version exactly matches the manifest:
+
    ```sh
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
+   git tag storage-cli-vX.Y.Z
+   git push origin storage-cli-vX.Y.Z
    ```
-4. GitHub Actions picks up the `v*` tag push, runs `npm ci && npm run build && npm publish
-   --access public --provenance`, and the new version appears on npm with a provenance
-   attestation (visible on the npm package page as "Built and signed on GitHub Actions").
 
-Nothing else is required from a human for a routine release — steps 1–3 above are it.
+4. GitHub Actions checks that the tag and manifest agree, runs `npm ci`, lint, and build once,
+   packages the compiled output with bundled dependencies, and performs an **offline** global
+   installation check of that archive.
+5. Only after all checks pass, the workflow creates the GitHub Release and attaches the archive
+   and checksum. The release tag is the complete deployment and rollback identity.
 
-## What's automated vs what a human must still do
-
-| Step | Automated? |
-|---|---|
-| Configuring npm to trust this repo's `publish.yml` (one-time) | **Human — npmjs.com UI** |
-| First publish of the package, if `@telecrypt-io/storage-cli` doesn't exist on npm yet | **Human — manual `npm publish`** |
-| Every release after that: build + publish on tag push | Automated (`.github/workflows/publish.yml`) |
-| Version bump + creating/pushing the git tag | **Human** (or a future release-automation step — not built yet) |
-
-## Status of this workflow
-
-`.github/workflows/publish.yml` is written to match npm's current Trusted Publishing / OIDC
-documentation (`permissions: id-token: write`, `registry-url` set via `actions/setup-node`, `npm
-publish --provenance`, no token secret). It has **not** been exercised end-to-end — that requires
-the human npmjs.com Trusted Publisher configuration above plus a real `vX.Y.Z` tag push, neither
-of which this session could do. The first real release is what validates it; if it fails, the
-likely culprits are (a) the Trusted Publisher config on npmjs.com not matching the repo/workflow
-filename exactly, or (b) the npm CLI version in the runner being older than the 11.5.1 minimum
-Trusted Publishing requires (the workflow pins `npm install -g npm@latest` specifically to avoid
-this).
+Never replace, delete, or rebuild a release archive. A correction requires a new source commit,
+new semver version, and a fresh immutable `storage-cli-v*` tag.
