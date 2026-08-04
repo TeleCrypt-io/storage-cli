@@ -1,6 +1,7 @@
 # TeleCrypt.io Storage CLI
 
-> E2EE file storage and sharing on Matrix. The staged CLI package is `@telecrypt-io/storage-cli` and provides `telecrypt-io storage` commands. Files are encrypted end-to-end; the server never sees plaintext. All commands support `--json` for machine-readable output.
+> E2EE file storage and sharing on Matrix, distributed only as exact GitHub Release archives. It
+> provides `telecrypt-io storage` commands and supports `--json` for machine-readable output.
 
 ## What it is
 
@@ -9,8 +10,11 @@ TeleCrypt.io Storage CLI is a command-line client for encrypted file storage and
 ### Installation
 
 ```bash
-npm i -g @telecrypt-io/storage-cli
+npm install -g https://github.com/TeleCrypt-io/storage-cli/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
 ```
+
+Replace `X.Y.Z` with an existing exact release. There is no `@telecrypt-io/storage-cli` package in
+the NPM registry; `npm` is used only to install the immutable archive fetched from GitHub.
 
 ## CLI command tree
 
