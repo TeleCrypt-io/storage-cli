@@ -25,12 +25,28 @@ This installs the `telecrypt-io` executable. The library source is in
 ## Quick start
 
 ```bash
-telecrypt-io storage login --homeserver https://your.server --user alice --password ...
+telecrypt-io storage login --homeserver https://your.server
 telecrypt-io storage folder create Photos
 telecrypt-io storage file upload <folderId> ./cat.jpg
 telecrypt-io storage folder share <folderId> @bob:your.server --role editor
 telecrypt-io storage recovery setup     # prints your Recovery Key — save it
 ```
+
+`login` always uses the OAuth/OIDC device-code flow: open the displayed URL,
+enter the displayed code, and approve it in your browser. It never accepts a
+password. Session and crypto state live in `~/.telecrypt-io/storage` by
+default; set `TELECRYPT_IO_STORAGE_HOME` to use a separate profile.
+
+Recovery Keys are secrets. `recovery restore` prompts without echoing the key;
+for automation, send it on standard input instead of putting it in command
+history, process listings, or argv:
+
+```bash
+printf '%s\n' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --recovery-key-stdin
+```
+
+Every command accepts `--json` anywhere in its invocation, for example
+`telecrypt-io storage folder list --json` or `telecrypt-io --json storage folder list`.
 
 ## Development
 

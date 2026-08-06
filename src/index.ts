@@ -3,13 +3,13 @@ import "fake-indexeddb/auto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Command } from "commander";
-import { createClient } from "matrix-js-sdk";
 import { clearProfile, readSession, writeSession, Session } from "./profile.js";
 import { initStorageForNewSession, openStorage, waitForBackupSettled } from "./storage.js";
 import { CliError } from "./errors.js";
 import { runAction, CommandResult } from "./output.js";
 import * as core from "@telecrypt-io/storage/core";
 import { runDeviceCodeLogin } from "./oidc.js";
+import { readSecret } from "./secretInput.js";
 
 // matrix-js-sdk (loglevel) and the rust-crypto WASM tracing layer write
 // verbose logs straight to console.log/debug/info/trace (stdout by default)
@@ -75,54 +75,26 @@ const storage = program
 
 storage
   .command("login")
-  .description("Log in and persist the session + crypto store to the profile")
+  .description("Log in through MAS OAuth and persist the session + crypto store")
   .requiredOption("--homeserver <url>", "Matrix homeserver base URL")
-  .option("--user <localpart>", "Username (localpart or full MXID) — password login")
-  .option("--password <pw>", "Password — password login")
-  .option("--oidc", "Log in via OIDC/MAS device-code grant instead of password")
   .action(async (opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
-      let session: Session;
-
-      if (opts.oidc) {
-        session = await runDeviceCodeLogin(opts.homeserver, {
-          onVerification: ({ verificationUri, verificationUriComplete, userCode }) => {
-            // Progress output — stderr only, so it never corrupts the
-            // stdout contract (--json's single JSON line / text mode's
-            // single line), same convention as TELECRYPT_IO_STORAGE_DEBUG
-            // SDK logging below.
-            process.stderr.write(
-              [
-                "",
-                `To finish logging in, visit: ${verificationUriComplete ?? verificationUri}`,
-                verificationUriComplete ? "" : `and enter code: ${userCode}`,
-                "Attempting to open your browser…",
-                "Waiting for approval…",
-                "",
-              ]
-                .filter((l) => l !== "")
-                .join("\n") + "\n",
-            );
-          },
-        });
-      } else {
-        if (!opts.user || !opts.password) {
-          throw new CliError("--user and --password are required for password login (or pass --oidc)");
-        }
-        const client = createClient({ baseUrl: opts.homeserver });
-        let res;
-        try {
-          res = await client.loginWithPassword(opts.user, opts.password);
-        } catch (err) {
-          throw new CliError(`login failed: ${(err as Error).message}`);
-        }
-        session = {
-          homeserver: opts.homeserver,
-          userId: res.user_id,
-          deviceId: res.device_id,
-          accessToken: res.access_token,
-        };
-      }
+      const session: Session = await runDeviceCodeLogin(opts.homeserver, {
+        onVerification: ({ verificationUri, verificationUriComplete, userCode }) => {
+          // Progress output — stderr only, so it never corrupts the
+          // stdout contract (--json's single JSON line / text mode's
+          // single line), same convention as TELECRYPT_IO_STORAGE_DEBUG.
+          process.stderr.write(
+            [
+              `To finish logging in, visit: ${verificationUriComplete ?? verificationUri}`,
+              `and enter code: ${userCode}`,
+              "Attempting to open your browser…",
+              "Waiting for approval…",
+            ]
+              .join("\n") + "\n",
+          );
+        },
+      });
 
       writeSession(session);
       // Establishes this device's crypto identity and does a first sync
@@ -133,49 +105,6 @@ storage
       return {
         json: { userId: session.userId, deviceId: session.deviceId, homeserver: session.homeserver },
         text: `Logged in as ${session.userId} (device ${session.deviceId})`,
-      };
-    });
-  });
-
-storage
-  .command("register")
-  .description("Register a new account (dev/test convenience), then log in")
-  .requiredOption("--homeserver <url>", "Matrix homeserver base URL")
-  .requiredOption("--user <localpart>", "Username (localpart)")
-  .requiredOption("--password <pw>", "Password")
-  .action(async (opts, command: Command) => {
-    await runAction(command, async (): Promise<CommandResult> => {
-      const res = await fetch(`${opts.homeserver}/_matrix/client/v3/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: opts.user,
-          password: opts.password,
-          auth: { type: "m.login.dummy" },
-          inhibit_login: false,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.text();
-        throw new CliError(`registration failed (${res.status}): ${body}`);
-      }
-      const data = (await res.json()) as {
-        user_id: string;
-        access_token: string;
-        device_id: string;
-      };
-      const session: Session = {
-        homeserver: opts.homeserver,
-        userId: data.user_id,
-        deviceId: data.device_id,
-        accessToken: data.access_token,
-      };
-      writeSession(session);
-      const opened = await initStorageForNewSession(session);
-      await opened.close();
-      return {
-        json: { userId: session.userId, deviceId: session.deviceId, homeserver: session.homeserver },
-        text: `Registered and logged in as ${session.userId} (device ${session.deviceId})`,
       };
     });
   });
@@ -245,10 +174,15 @@ recovery
   });
 
 recovery
-  .command("restore <recoveryKey>")
-  .description("Restore keys on this device from a Recovery Key")
-  .action(async (recoveryKey: string, _opts, command: Command) => {
+  .command("restore")
+  .description("Restore keys on this device from a Recovery Key (prompted securely)")
+  .option("--recovery-key-stdin", "read the Recovery Key from stdin (for automation)")
+  .action(async (opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
+      const recoveryKey = await readSecret({
+        prompt: "Recovery Key: ",
+        fromStdin: Boolean(opts.recoveryKeyStdin),
+      });
       const opened = await openStorage();
       try {
         const result = await core.restoreRecovery(opened.storage, recoveryKey);

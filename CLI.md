@@ -32,9 +32,12 @@ accessToken) and the crypto store snapshot. Default `~/.telecrypt-io/storage`; o
 side (e.g. in tests, or to act as two participants on one machine):
 
 ```sh
-TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-alice telecrypt-io storage login --homeserver ... --user alice --password ...
-TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-bob   telecrypt-io storage login --homeserver ... --user bob   --password ...
+TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-alice telecrypt-io storage login --homeserver ...
+TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-bob   telecrypt-io storage login --homeserver ...
 ```
+
+`login` is OAuth/OIDC device-code only: it prints a verification URL and user
+code, then waits for browser approval. It never accepts a password.
 
 ## `--json`
 
@@ -48,8 +51,7 @@ suppressed by default; set `TELECRYPT_IO_STORAGE_DEBUG=1` to see them (routed to
 ### Session
 
 ```sh
-telecrypt-io storage login --homeserver <url> --user <localpart> --password <pw>
-telecrypt-io storage register --homeserver <url> --user <localpart> --password <pw>   # dev/test convenience
+telecrypt-io storage login --homeserver <url>   # OAuth/OIDC device-code browser approval
 telecrypt-io storage whoami
 telecrypt-io storage logout
 ```
@@ -58,8 +60,13 @@ telecrypt-io storage logout
 
 ```sh
 telecrypt-io storage recovery setup                  # prints the Recovery Key — save it, it's shown once
-telecrypt-io storage recovery restore <recoveryKey>   # on a new device/profile, recovers previously uploaded files
+telecrypt-io storage recovery restore                 # prompts without echoing the Recovery Key
+printf '%s\n' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --recovery-key-stdin
 ```
+
+Never pass a Recovery Key as a positional argument or any other argv option:
+argv is commonly visible in process listings and shell history. On a new
+device/profile, first use OAuth login, then restore from the prompt or stdin.
 
 ### Folders
 
@@ -94,8 +101,9 @@ telecrypt-io storage file delete <folderId> <fileId>
 export A=~/.telecrypt-io/storage-alice
 export B=~/.telecrypt-io/storage-bob
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage register --homeserver http://localhost:8008 --user alice --password pw --json
-TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage register --homeserver http://localhost:8008 --user bob   --password pw --json
+# Each login prints a URL + device code. Approve each in the browser.
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://your.server --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://your.server --json
 
 FOLDER_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder create "Shared" --json | jq -r .folderId)
 
@@ -117,7 +125,7 @@ TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage recovery setup --json
 
 # Later, on a fresh profile (new device, same account):
 export A2=~/.telecrypt-io/storage-alice-newlaptop
-TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver http://localhost:8008 --user alice --password pw --json
-TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore "EsTx ...." --json
+TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://your.server --json
+printf '%s\n' "$RECOVERY_KEY" | TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore --recovery-key-stdin --json
 TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage file download "$FOLDER_ID" '$...' ./recovered.pdf --json
 ```

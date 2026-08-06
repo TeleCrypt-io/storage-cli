@@ -59,18 +59,18 @@ export interface DeviceCodeLoginHooks {
  * start device authorization, print verification info + try to open the
  * browser, poll until approved, confirm identity via `/whoami`. Returns a
  * `Session` ready to `writeSession()` — includes the OIDC token set fields
- * (`refreshToken`, `oidcIssuer`, `oidcClientId`, `oidcIdToken`) so later CLI
+ * (`refreshToken`, `oidcIssuer`, `oidcClientId`, `oidcTokenEndpoint`) so later CLI
  * invocations can reuse + refresh it.
  */
 export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLoginHooks): Promise<Session> {
-// See src/oidcWindowPolyfill.ts: discovery is the one OIDC call that
+  // See src/oidcWindowPolyfill.ts: discovery is the one OIDC call that
   // needs a `window` stub under Node, and the only place in the CLI it's
   // safe to install one — nothing crypto/WASM-related exists yet in this
   // process.
   const authMetadata = await withOidcWindowShim(() => discoverOidcIssuer(homeserver));
   if (!authMetadata.device_authorization_endpoint) {
     throw new CliError(
-      `${homeserver} does not advertise OIDC device-code support (no device_authorization_endpoint) — try password login instead.`,
+      `${homeserver} does not advertise OIDC device-code support (no device_authorization_endpoint).`,
     );
   }
 
