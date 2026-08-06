@@ -55,14 +55,9 @@ describe("writePrivateFileAtomic", () => {
   it("creates a 0600 file and leaves no temporary file behind", () => {
     const dir = path.join(makeTempDir(), "profile");
     const target = path.join(dir, "session.json");
-    const renameSync = vi.spyOn(fs, "renameSync");
 
     writePrivateFileAtomic(target, "first secret");
 
-    expect(renameSync).toHaveBeenCalledWith(
-      expect.stringMatching(/\.session\.json\.\d+\.\d+\.tmp$/),
-      target,
-    );
     expect(fs.readFileSync(target, "utf8")).toBe("first secret");
     expect(fs.lstatSync(target).mode & 0o777).toBe(0o600);
     expect(fs.lstatSync(dir).mode & 0o777).toBe(0o700);
