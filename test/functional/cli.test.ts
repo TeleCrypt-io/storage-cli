@@ -441,7 +441,10 @@ describe("CLI", () => {
         expect(typeof res.json.error).toBe("string");
         expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
       },
-      30000,
+      // A fresh CLI process must initialize crypto and sync with the
+      // disposable test server. That server may be slow; revisit this 60s
+      // budget if it becomes consistently faster.
+      60000,
     );
 
     it("whoami with no session", async () => {
