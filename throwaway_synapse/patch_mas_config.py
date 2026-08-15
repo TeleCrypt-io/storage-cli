@@ -51,11 +51,9 @@ content = re.sub(r"^  max_connections: .*$", "  max_connections: 50", content, f
 # http/localhost redirect URIs and mismatched hosts freely — never do this on
 # a production MAS.
 #
-# rate_limiting: a functional test suite hammers /login from one IP far
-# harder than MAS's sane production defaults (login.per_ip burst 3 /
-# 0.05 per_second) allow — every registerTestUser() call logs in immediately
-# after registering. Mirrors throwaway_synapse/homeserver.extra.yaml's own
-# generous rc_login override; same "disposable dev/test instance" rationale.
+# rate_limiting: a functional test suite performs many device-grant approvals
+# from one local IP. Relax the development MAS's login rate limit only for
+# that disposable workload; production retains its own policy.
 content += """
 policy:
   data:

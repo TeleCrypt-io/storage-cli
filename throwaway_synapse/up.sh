@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch a throwaway MAS-delegated Synapse stack for functional tests, via
 # podman: Postgres (MAS's database) + MAS + Synapse (delegating auth to MAS,
-# MSC3861, compatibility mode so m.login.password still works) + a Caddy
+# MSC3861) + a Caddy
 # front door on :8008 (MAS's docs require the three compat auth endpoints —
 # login/logout/refresh — to be proxied to MAS directly; Synapse no longer
 # serves them once delegated).

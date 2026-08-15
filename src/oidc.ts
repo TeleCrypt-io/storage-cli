@@ -96,7 +96,9 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
     verificationUriComplete: session.verification_uri_complete,
     userCode: session.user_code,
   });
-  tryOpenBrowser(session.verification_uri_complete ?? session.verification_uri);
+  if (!process.env.TELECRYPT_IO_STORAGE_NO_BROWSER) {
+    tryOpenBrowser(session.verification_uri_complete ?? session.verification_uri);
+  }
 
   const result = await waitForDeviceCodeLogin(authMetadata, clientId, session);
   if (isDeviceAccessTokenError(result)) {

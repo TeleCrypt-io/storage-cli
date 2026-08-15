@@ -52,6 +52,7 @@ const EXT_MIMETYPES: Record<string, string> = {
   ".pdf": "application/pdf",
   ".md": "text/markdown",
 };
+const MAX_RECOVERY_KEY_BYTES = 16 * 1024;
 
 function guessMimetype(filePath: string): string {
   return EXT_MIMETYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
@@ -76,7 +77,7 @@ async function readRecoveryKeyFromStdin(): Promise<string> {
   for await (const chunk of process.stdin) {
     const data = Buffer.from(chunk);
     length += data.length;
-    if (length > 16 * 1024) throw new CliError("recovery key input is unexpectedly large");
+    if (length > MAX_RECOVERY_KEY_BYTES) throw new CliError("recovery key input is unexpectedly large");
     chunks.push(data);
   }
   return requireRecoveryKey(Buffer.concat(chunks).toString("utf8"));
@@ -91,16 +92,29 @@ async function promptForRecoveryKey(): Promise<string> {
   return new Promise((resolve, reject) => {
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw;
-    let value = "";
+    const chars: string[] = [];
+    let byteLength = 0;
+    let rawModeEnabled = false;
+    let settled = false;
 
     const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
       stdin.off("data", onData);
-      stdin.setRawMode(wasRaw ?? false);
+      let restoreError: unknown;
+      try {
+        if (rawModeEnabled || stdin.isRaw) stdin.setRawMode(wasRaw ?? false);
+      } catch (err) {
+        restoreError = err;
+      } finally {
+        stdin.pause();
+      }
       process.stderr.write("\n");
       if (error) reject(error);
+      else if (restoreError) reject(restoreError);
       else {
         try {
-          resolve(requireRecoveryKey(value));
+          resolve(requireRecoveryKey(chars.join("")));
         } catch (err) {
           reject(err);
         }
@@ -117,17 +131,28 @@ async function promptForRecoveryKey(): Promise<string> {
           return;
         }
         if (char === "\b" || char === "\u007f") {
-          value = value.slice(0, -1);
+          const removed = chars.pop();
+          if (removed) byteLength -= Buffer.byteLength(removed, "utf8");
           continue;
         }
-        value += char;
+        byteLength += Buffer.byteLength(char, "utf8");
+        if (byteLength > MAX_RECOVERY_KEY_BYTES) {
+          finish(new CliError("recovery key input is unexpectedly large"));
+          return;
+        }
+        chars.push(char);
       }
     };
 
-    process.stderr.write("Recovery Key: ");
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.on("data", onData);
+    try {
+      process.stderr.write("Recovery Key: ");
+      stdin.setRawMode(true);
+      rawModeEnabled = true;
+      stdin.resume();
+      stdin.on("data", onData);
+    } catch (err) {
+      finish(err as Error);
+    }
   });
 }
 
@@ -154,7 +179,6 @@ storage
   .command("login")
   .description("Log in and persist the session + crypto store to the profile")
   .requiredOption("--homeserver <url>", "Matrix homeserver base URL")
-  .requiredOption("--oidc", "Log in via OIDC/MAS device-code grant")
   .action(async (opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const session = await runDeviceCodeLogin(opts.homeserver, {
@@ -165,7 +189,7 @@ storage
             [
               "",
               `To finish logging in, visit: ${verificationUriComplete ?? verificationUri}`,
-              verificationUriComplete ? "" : `and enter code: ${userCode}`,
+              `and enter code: ${userCode}`,
               "Attempting to open your browser…",
               "Waiting for approval…",
               "",

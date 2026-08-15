@@ -33,8 +33,8 @@ secret files must be owned by the current user, regular (not symlinked), and ina
 and other users; the CLI refuses unsafe state rather than trying to repair it.
 
 ```sh
-TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-alice telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc
-TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-bob   telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc
+TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-alice telecrypt-io storage login --homeserver https://backend.telecrypt.io
+TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-bob   telecrypt-io storage login --homeserver https://backend.telecrypt.io
 ```
 
 ## `--json`
@@ -49,7 +49,7 @@ suppressed by default; set `TELECRYPT_IO_STORAGE_DEBUG=1` to see them (routed to
 ### Session
 
 ```sh
-telecrypt-io storage login --homeserver <url> --oidc
+telecrypt-io storage login --homeserver <url>
 telecrypt-io storage whoami
 telecrypt-io storage logout
 ```
@@ -95,8 +95,8 @@ telecrypt-io storage file delete <folderId> <fileId>
 export A=~/.telecrypt-io/storage-alice
 export B=~/.telecrypt-io/storage-bob
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc --json
-TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
 
 FOLDER_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder create "Shared" --json | jq -r .folderId)
 
@@ -118,7 +118,7 @@ TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage recovery setup --json
 
 # Later, on a fresh profile (new device, same account):
 export A2=~/.telecrypt-io/storage-alice-newlaptop
-TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc --json
+TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
 printf '%s' "$RECOVERY_KEY" | TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore --key-stdin --json
 TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage file download "$FOLDER_ID" '$...' ./recovered.pdf --json
 ```

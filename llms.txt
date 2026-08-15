@@ -23,7 +23,7 @@ All commands use the format `telecrypt-io --json storage <command>`. The `--json
 ### Session management
 
 **`login`** — Log in and persist the session to the local profile
-- `telecrypt-io --json storage login --homeserver https://backend.telecrypt.io --oidc` (OIDC/MAS device-code grant; opens browser for approval)
+- `telecrypt-io --json storage login --homeserver https://backend.telecrypt.io` (OIDC/MAS device-code grant; opens browser for approval)
 
 **`whoami`** — Print the current session identity
 - `telecrypt-io --json storage whoami`
@@ -84,7 +84,7 @@ All commands with `--json` return structured JSON on success:
 On error (command exits with code 1):
 
 ```json
-{"error": "login failed: Invalid username or password"}
+{"error": "device login was not approved"}
 ```
 
 Agents should check exit code (0 = success, 1 = failure) and parse stderr for error JSON.

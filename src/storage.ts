@@ -19,7 +19,7 @@ export interface OpenedStorage {
 
 /**
  * Builds a TeleCryptIOStorage for the given OIDC/MAS session (persisted by
- * `storage login --oidc`, see src/oidc.ts) through `createFromOidc()` with
+ * `storage login`, see src/oidc.ts) through `createFromOidc()` with
  * a token refresh function wired to persist
  * refreshed tokens straight back to this profile's session.json, so a later
  * CLI invocation picks up the refreshed access token rather than the
@@ -121,7 +121,7 @@ export async function waitForBackupSettled(
   });
 }
 
-/** Used by login/register: builds storage for a brand-new session and
+/** Used by login: builds storage for a brand-new session and
  * establishes the initial (empty) crypto store snapshot on disk. */
 export async function initStorageForNewSession(
   session: Session,

@@ -105,7 +105,7 @@ export function readSession(dir: string = profileDir()): Session | null {
     typeof parsed.oidcClientId !== "string" ||
     typeof parsed.oidcTokenEndpoint !== "string"
   ) {
-    throw new Error("profile session is not a valid OIDC/MAS session; log in again with --oidc");
+    throw new Error("profile session is not a valid OIDC/MAS session; log in again");
   }
   return parsed as Session;
 }

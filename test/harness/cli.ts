@@ -13,10 +13,22 @@ export interface CliResult {
   stderr: string;
 }
 
+export interface RunCliOptions {
+  /** Test-only streaming observation, used to approve a local MAS device
+   * grant after the real CLI prints its verification code. */
+  onStderr?: (stderr: string) => void;
+  /** Explicit stdin for commands that intentionally read it. */
+  stdin?: string;
+}
+
 /** Spawns the CLI as a genuinely separate OS process (child_process.spawn),
  * never in-process — this is what the cross-process persistence proof and
  * every other CLI test scenario depend on. */
-export function runCli(args: string[], env: Record<string, string>): Promise<CliResult> {
+export function runCli(
+  args: string[],
+  env: Record<string, string>,
+  options: RunCliOptions = {},
+): Promise<CliResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(TSX_BIN, [CLI_ENTRY, ...args], {
       env: { ...process.env, ...env },
@@ -25,7 +37,11 @@ export function runCli(args: string[], env: Record<string, string>): Promise<Cli
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+    child.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString();
+      options.onStderr?.(stderr);
+    });
+    child.stdin.end(options.stdin ?? "");
     child.on("error", reject);
     child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
   });
@@ -38,8 +54,9 @@ export function runCli(args: string[], env: Record<string, string>): Promise<Cli
 export async function cliJson(
   args: string[],
   env: Record<string, string>,
+  options: RunCliOptions = {},
 ): Promise<{ code: number; json: Record<string, unknown>; stderr: string; stdout: string }> {
-  const result = await runCli([...args, "--json"], env);
+  const result = await runCli([...args, "--json"], env, options);
   // On success the JSON payload is on stdout; on failure it's the
   // `{ "error": "..." }` object on stderr (see output.ts) — parse whichever
   // stream the CLI actually used, per its own contract.

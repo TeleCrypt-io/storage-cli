@@ -25,7 +25,7 @@ This installs the `telecrypt-io` executable. The library source is in
 ## Quick start
 
 ```bash
-telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc
+telecrypt-io storage login --homeserver https://backend.telecrypt.io
 telecrypt-io storage folder create Photos
 telecrypt-io storage file upload <folderId> ./cat.jpg
 telecrypt-io storage folder share <folderId> @bob:your.server --role editor

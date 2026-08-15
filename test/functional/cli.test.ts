@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { cliJson, freshProfileDir, runCli } from "../harness/cli";
-import { registerAndWaitForMasProvisioning } from "../harness/users";
+import { approveDeviceCodeViaHttp } from "../harness/oidcApproval";
+import { registerUserInMas } from "../harness/users";
 import { waitFor } from "../harness/waitFor";
 
 const HOMESERVER = "http://localhost:8008";
@@ -14,39 +15,70 @@ function randomUser(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}`.toLowerCase();
 }
 
-/**
- * Provisions a brand-new account and logs the CLI into it in the given
- * profile dir, returning its userId + the password (needed later for a
- * fresh-device login in CLI.4).
- *
- * The throwaway stack's Synapse delegates auth to a local MAS, so the CLI's
- * own `storage register` command (which
- * still does a plain `POST /_matrix/client/v3/register`) no longer works
- * against it — Synapse refuses that request once delegated ("Registration
- * has been disabled"). That command's own implementation is untouched and
- * still correct against a plain, non-MAS Synapse; this test suite just needs
- * a different way to provision the account it drives `storage login` against
- * — same MAS-side provisioning `test/harness/users.ts` uses for the rest of
- * the suite, then the CLI's ordinary password `login`.
- *
- * `registerAndWaitForMasProvisioning` (not just `registerUserInMas`)
- * because MAS provisions the Synapse-side account asynchronously — see its
- * doc comment in test/harness/users.ts. Without waiting, the CLI subprocess's
- * own login attempt below can hit the same transient race under load.
- */
+interface LocalMasUser {
+  username: string;
+  password: string;
+}
+
+/** Drives the product CLI's actual device-code flow. The test password is
+ * used only by the local MAS browser-form approval helper. */
+async function loginProfileOnce(
+  dir: string,
+  user: LocalMasUser,
+): Promise<{ userId: string; username: string; password: string }> {
+  let approval: Promise<void> | undefined;
+  let approvalFailure: unknown;
+  const result = await runCli(
+    ["storage", "login", "--homeserver", HOMESERVER, "--json"],
+    {
+      TELECRYPT_IO_STORAGE_HOME: dir,
+      TELECRYPT_IO_STORAGE_NO_BROWSER: "1",
+    },
+    {
+      onStderr(stderr) {
+        const match = stderr.match(/and enter code: ([^\s]+)/);
+        if (!match || approval) return;
+        approval = approveDeviceCodeViaHttp(user.username, user.password, match[1]).catch((err) => {
+          approvalFailure = err;
+        });
+      },
+    },
+  );
+  if (!approval) throw new Error(`CLI did not print an OIDC device code: ${result.stderr}`);
+  await approval;
+  if (approvalFailure) throw approvalFailure;
+  expect(result.code).toBe(0);
+  const json = JSON.parse(result.stdout) as { userId: string };
+  return { userId: json.userId, ...user };
+}
+
+/** `mas-cli manage register-user` returns before its asynchronous Matrix
+ * provisioning job always settles. Retrying the full OIDC flow observes that
+ * real boundary without falling back to compatibility password login. */
+async function loginProfile(
+  dir: string,
+  user: LocalMasUser,
+): Promise<{ userId: string; username: string; password: string }> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await loginProfileOnce(dir, user);
+    } catch (err) {
+      lastError = err;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  throw lastError;
+}
+
 async function registerProfile(
   dir: string,
   prefix: string,
 ): Promise<{ userId: string; username: string; password: string }> {
   const username = randomUser(prefix);
   const password = "pw_" + Math.random().toString(36).slice(2, 10);
-  await registerAndWaitForMasProvisioning(username, password);
-  const res = await cliJson(
-    ["storage", "login", "--homeserver", HOMESERVER, "--user", username, "--password", password],
-    { TELECRYPT_IO_STORAGE_HOME: dir },
-  );
-  expect(res.code).toBe(0);
-  return { userId: res.json.userId as string, username, password };
+  await registerUserInMas(username, password);
+  return loginProfile(dir, { username, password });
 }
 
 describe("CLI", () => {
@@ -253,24 +285,11 @@ describe("CLI", () => {
       );
 
       // A genuinely new device for the SAME account: fresh profile dir (empty
-      // crypto store) + `login` (mints a brand-new device_id/access_token).
+      // crypto store) + a second MAS OIDC device authorization.
       const dir2 = freshProfileDir("recoverDev2");
       const env2 = { TELECRYPT_IO_STORAGE_HOME: dir2 };
-      const loginRes = await cliJson(
-        [
-          "storage",
-          "login",
-          "--homeserver",
-          HOMESERVER,
-          "--user",
-          user.username,
-          "--password",
-          user.password,
-        ],
-        env2,
-      );
-      expect(loginRes.code).toBe(0);
-      expect(loginRes.json.deviceId).not.toBe(undefined);
+      const newDevice = await loginProfile(dir2, user);
+      expect(newDevice.userId).toBe(user.userId);
 
       // Negative control: before restoring, device 2 must NOT be able to
       // decrypt the file — proves the new device really does start empty.
@@ -295,7 +314,11 @@ describe("CLI", () => {
 
       // Now restore from the Recovery Key and confirm the file recovers,
       // byte-identical to what device 1 originally uploaded.
-      const restoreRes = await cliJson(["storage", "recovery", "restore", recoveryKey], env2);
+      const restoreRes = await cliJson(
+        ["storage", "recovery", "restore", "--key-stdin"],
+        env2,
+        { stdin: recoveryKey },
+      );
       expect(restoreRes.code).toBe(0);
       expect(restoreRes.json.imported as number).toBeGreaterThan(0);
 
@@ -388,26 +411,17 @@ describe("CLI", () => {
   );
 
   describe("CLI.6 error paths: clean non-zero exit + JSON error, no stack traces", () => {
-    it("bad login credentials", async () => {
-      const dir = freshProfileDir("badlogin");
+    it("login rejects a local endpoint without Matrix OIDC discovery", async () => {
+      const dir = freshProfileDir("missing-oidc");
       const res = await cliJson(
-        [
-          "storage",
-          "login",
-          "--homeserver",
-          HOMESERVER,
-          "--user",
-          randomUser("nouser"),
-          "--password",
-          "wrong-password",
-        ],
-        { TELECRYPT_IO_STORAGE_HOME: dir },
+        ["storage", "login", "--homeserver", `${HOMESERVER}/not-a-homeserver`],
+        {
+          TELECRYPT_IO_STORAGE_HOME: dir,
+          TELECRYPT_IO_STORAGE_NO_BROWSER: "1",
+        },
       );
       expect(res.code).not.toBe(0);
       expect(typeof res.json.error).toBe("string");
-      // stdout must be empty/unused on failure — the error goes to stderr,
-      // and stderr itself must be exactly the one clean JSON line (parsing
-      // it directly is the strongest proof there's no stack-trace dump).
       expect(res.stdout.trim()).toBe("");
       expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
     });
@@ -417,7 +431,11 @@ describe("CLI", () => {
       await registerProfile(dir, "badrecovery");
       const env = { TELECRYPT_IO_STORAGE_HOME: dir };
 
-      const res = await cliJson(["storage", "recovery", "restore", "not a real recovery key"], env);
+      const res = await cliJson(
+        ["storage", "recovery", "restore", "--key-stdin"],
+        env,
+        { stdin: "not a real recovery key" },
+      );
       expect(res.code).not.toBe(0);
       expect(typeof res.json.error).toBe("string");
       expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
