@@ -21,10 +21,11 @@ function randomSuffix(): string {
  * (confirmed: 403 "Registration has been disabled") — MAS owns account
  * creation now. `mas-cli manage register-user` is the scriptable way to
  * create one non-interactively; it runs inside the MAS container, so this
- * shells out via `podman exec`. This is the ONE change from the pre-MAS
- * harness: password login (below) is completely unchanged, still a plain
- * `POST /_matrix/client/v3/login`, now transparently proxied by the
- * throwaway front door (Caddy, :8008) to MAS's compat endpoint.
+ * shells out via `podman exec`. Password use in this file is confined to
+ * disposable fixture setup/readiness checks and MAS-hosted OAuth approval;
+ * the product CLI never receives it. The readiness check below uses the
+ * throwaway front door's MAS compatibility endpoint only to confirm that
+ * asynchronous Synapse provisioning has completed.
  */
 export async function registerUserInMas(username: string, password: string): Promise<void> {
   const args = [

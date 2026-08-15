@@ -30,6 +30,7 @@
  */
 import * as fs from "node:fs";
 import * as v8 from "node:v8";
+import { validatePrivateFile, writePrivateFileAtomic } from "./profile.js";
 
 interface IndexSpec {
   name: string;
@@ -206,13 +207,14 @@ export async function importIndexedDB(snapshot: CryptoSnapshot): Promise<void> {
 
 export function loadSnapshotFromDisk(path: string): CryptoSnapshot | null {
   if (!fs.existsSync(path)) return null;
+  validatePrivateFile(path, "crypto snapshot");
   const buf = fs.readFileSync(path);
   if (buf.length === 0) return null;
   return v8.deserialize(buf) as CryptoSnapshot;
 }
 
 export function saveSnapshotToDisk(path: string, snapshot: CryptoSnapshot): void {
-  fs.writeFileSync(path, v8.serialize(snapshot), { mode: 0o600 });
+  writePrivateFileAtomic(path, v8.serialize(snapshot));
 }
 
 /** Loads the on-disk snapshot (if any) into the current process's fake-indexeddb. */

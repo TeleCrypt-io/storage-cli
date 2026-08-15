@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { cliJson, freshProfileDir, runCli } from "../harness/cli";
+import { cliJson, cliJsonWithDeviceCodeApproval, freshProfileDir, runCli } from "../harness/cli";
 import { registerAndWaitForMasProvisioning } from "../harness/users";
 import { waitFor } from "../harness/waitFor";
 
@@ -15,24 +15,20 @@ function randomUser(prefix: string): string {
 }
 
 /**
- * Provisions a brand-new account and logs the CLI into it in the given
- * profile dir, returning its userId + the password (needed later for a
- * fresh-device login in CLI.4).
+ * Provisions a brand-new account and logs the CLI into it through its OAuth
+ * device-code flow, returning its user ID plus test-fixture credentials.
  *
- * The throwaway stack's Synapse delegates auth to a local MAS, so the CLI's
- * own `storage register` command (which
- * still does a plain `POST /_matrix/client/v3/register`) no longer works
- * against it — Synapse refuses that request once delegated ("Registration
- * has been disabled"). That command's own implementation is untouched and
- * still correct against a plain, non-MAS Synapse; this test suite just needs
- * a different way to provision the account it drives `storage login` against
- * — same MAS-side provisioning `test/harness/users.ts` uses for the rest of
- * the suite, then the CLI's ordinary password `login`.
+ * The throwaway stack's Synapse delegates auth to a local MAS, so account
+ * provisioning happens on MAS rather than through the product CLI. The test
+ * suite provisions its disposable account with the same MAS helper used by
+ * the rest of the suite. The password remains inside the local fixture:
+ * `cliJsonWithDeviceCodeApproval` enters it only on MAS's browser-equivalent
+ * approval page, never in the product CLI process or argv.
  *
  * `registerAndWaitForMasProvisioning` (not just `registerUserInMas`)
  * because MAS provisions the Synapse-side account asynchronously — see its
  * doc comment in test/harness/users.ts. Without waiting, the CLI subprocess's
- * own login attempt below can hit the same transient race under load.
+ * device-code flow below can hit the same transient race under load.
  */
 async function registerProfile(
   dir: string,
@@ -41,9 +37,10 @@ async function registerProfile(
   const username = randomUser(prefix);
   const password = "pw_" + Math.random().toString(36).slice(2, 10);
   await registerAndWaitForMasProvisioning(username, password);
-  const res = await cliJson(
-    ["storage", "login", "--homeserver", HOMESERVER, "--user", username, "--password", password],
+  const res = await cliJsonWithDeviceCodeApproval(
+    ["storage", "login", "--homeserver", HOMESERVER],
     { TELECRYPT_IO_STORAGE_HOME: dir },
+    { username, password },
   );
   expect(res.code).toBe(0);
   return { userId: res.json.userId as string, username, password };
@@ -253,21 +250,14 @@ describe("CLI", () => {
       );
 
       // A genuinely new device for the SAME account: fresh profile dir (empty
-      // crypto store) + `login` (mints a brand-new device_id/access_token).
+      // crypto store) + OAuth device-code login (mints a brand-new
+      // device_id/access_token).
       const dir2 = freshProfileDir("recoverDev2");
       const env2 = { TELECRYPT_IO_STORAGE_HOME: dir2 };
-      const loginRes = await cliJson(
-        [
-          "storage",
-          "login",
-          "--homeserver",
-          HOMESERVER,
-          "--user",
-          user.username,
-          "--password",
-          user.password,
-        ],
+      const loginRes = await cliJsonWithDeviceCodeApproval(
+        ["storage", "login", "--homeserver", HOMESERVER],
         env2,
+        { username: user.username, password: user.password },
       );
       expect(loginRes.code).toBe(0);
       expect(loginRes.json.deviceId).not.toBe(undefined);
@@ -295,7 +285,11 @@ describe("CLI", () => {
 
       // Now restore from the Recovery Key and confirm the file recovers,
       // byte-identical to what device 1 originally uploaded.
-      const restoreRes = await cliJson(["storage", "recovery", "restore", recoveryKey], env2);
+      const restoreRes = await cliJson(
+        ["storage", "recovery", "restore", "--recovery-key-stdin"],
+        env2,
+        { stdin: `${recoveryKey}\n` },
+      );
       expect(restoreRes.code).toBe(0);
       expect(restoreRes.json.imported as number).toBeGreaterThan(0);
 
@@ -388,36 +382,16 @@ describe("CLI", () => {
   );
 
   describe("CLI.6 error paths: clean non-zero exit + JSON error, no stack traces", () => {
-    it("bad login credentials", async () => {
-      const dir = freshProfileDir("badlogin");
-      const res = await cliJson(
-        [
-          "storage",
-          "login",
-          "--homeserver",
-          HOMESERVER,
-          "--user",
-          randomUser("nouser"),
-          "--password",
-          "wrong-password",
-        ],
-        { TELECRYPT_IO_STORAGE_HOME: dir },
-      );
-      expect(res.code).not.toBe(0);
-      expect(typeof res.json.error).toBe("string");
-      // stdout must be empty/unused on failure — the error goes to stderr,
-      // and stderr itself must be exactly the one clean JSON line (parsing
-      // it directly is the strongest proof there's no stack-trace dump).
-      expect(res.stdout.trim()).toBe("");
-      expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
-    });
-
     it("garbage recovery key", async () => {
       const dir = freshProfileDir("badrecovery");
       await registerProfile(dir, "badrecovery");
       const env = { TELECRYPT_IO_STORAGE_HOME: dir };
 
-      const res = await cliJson(["storage", "recovery", "restore", "not a real recovery key"], env);
+      const res = await cliJson(
+        ["storage", "recovery", "restore", "--recovery-key-stdin"],
+        env,
+        { stdin: "not a real recovery key\n" },
+      );
       expect(res.code).not.toBe(0);
       expect(typeof res.json.error).toBe("string");
       expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
