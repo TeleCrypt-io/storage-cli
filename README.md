@@ -25,12 +25,15 @@ This installs the `telecrypt-io` executable. The library source is in
 ## Quick start
 
 ```bash
-telecrypt-io storage login --homeserver https://your.server --user alice --password ...
+telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc
 telecrypt-io storage folder create Photos
 telecrypt-io storage file upload <folderId> ./cat.jpg
 telecrypt-io storage folder share <folderId> @bob:your.server --role editor
 telecrypt-io storage recovery setup     # prints your Recovery Key — save it
 ```
+
+The CLI supports MAS/OIDC device authorization only; it never sends a Matrix
+password compatibility-login request.
 
 ## Development
 

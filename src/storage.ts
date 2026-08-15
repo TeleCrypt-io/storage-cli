@@ -18,10 +18,9 @@ export interface OpenedStorage {
 }
 
 /**
- * Builds a TeleCryptIOStorage for the given session — plain password/access-
- * token sessions go through `create()`; sessions with an OIDC token set
- * (persisted by `storage login --oidc`, see src/oidc.ts) go through
- * `createFromOidc()` with a token refresh function wired to persist
+ * Builds a TeleCryptIOStorage for the given OIDC/MAS session (persisted by
+ * `storage login --oidc`, see src/oidc.ts) through `createFromOidc()` with
+ * a token refresh function wired to persist
  * refreshed tokens straight back to this profile's session.json, so a later
  * CLI invocation picks up the refreshed access token rather than the
  * (possibly now-expired) one this process started with. Needs no OIDC
@@ -29,15 +28,6 @@ export interface OpenedStorage {
  * and persisted at login time (see src/oidc.ts).
  */
 async function buildStorageForSession(session: Session, dir: string): Promise<TeleCryptIOStorage> {
-  if (!session.refreshToken || !session.oidcClientId || !session.oidcTokenEndpoint) {
-    return TeleCryptIOStorage.create({
-      baseUrl: session.homeserver,
-      userId: session.userId,
-      accessToken: session.accessToken,
-      deviceId: session.deviceId,
-    });
-  }
-
   const tokenRefreshFunction = buildTokenRefreshFunction(
     session.oidcTokenEndpoint,
     session.oidcClientId,

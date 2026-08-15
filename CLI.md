@@ -26,14 +26,15 @@ Or, after `npm run build` / `npm link`, as the `telecrypt-io` binary.
 
 ## Profile / state
 
-Every command reads/writes a **profile directory**: session (homeserver, userId, deviceId,
-accessToken) and the crypto store snapshot. Default `~/.telecrypt-io/storage`; override with
-`TELECRYPT_IO_STORAGE_HOME` — this is how you run multiple independent accounts/devices side by
-side (e.g. in tests, or to act as two participants on one machine):
+Every command reads/writes a **profile directory**: an OIDC session (homeserver, userId, deviceId,
+access/refresh tokens) and the crypto store snapshot. Default `~/.telecrypt-io/storage`; override
+with `TELECRYPT_IO_STORAGE_HOME` for independent accounts/devices. The profile directory and both
+secret files must be owned by the current user, regular (not symlinked), and inaccessible to group
+and other users; the CLI refuses unsafe state rather than trying to repair it.
 
 ```sh
-TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-alice telecrypt-io storage login --homeserver ... --user alice --password ...
-TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-bob   telecrypt-io storage login --homeserver ... --user bob   --password ...
+TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-alice telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc
+TELECRYPT_IO_STORAGE_HOME=~/.telecrypt-io/storage-bob   telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc
 ```
 
 ## `--json`
@@ -48,8 +49,7 @@ suppressed by default; set `TELECRYPT_IO_STORAGE_DEBUG=1` to see them (routed to
 ### Session
 
 ```sh
-telecrypt-io storage login --homeserver <url> --user <localpart> --password <pw>
-telecrypt-io storage register --homeserver <url> --user <localpart> --password <pw>   # dev/test convenience
+telecrypt-io storage login --homeserver <url> --oidc
 telecrypt-io storage whoami
 telecrypt-io storage logout
 ```
@@ -58,7 +58,8 @@ telecrypt-io storage logout
 
 ```sh
 telecrypt-io storage recovery setup                  # prints the Recovery Key — save it, it's shown once
-telecrypt-io storage recovery restore <recoveryKey>   # on a new device/profile, recovers previously uploaded files
+telecrypt-io storage recovery restore                 # hidden Recovery Key prompt
+printf '%s' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --key-stdin
 ```
 
 ### Folders
@@ -94,8 +95,8 @@ telecrypt-io storage file delete <folderId> <fileId>
 export A=~/.telecrypt-io/storage-alice
 export B=~/.telecrypt-io/storage-bob
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage register --homeserver http://localhost:8008 --user alice --password pw --json
-TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage register --homeserver http://localhost:8008 --user bob   --password pw --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc --json
 
 FOLDER_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder create "Shared" --json | jq -r .folderId)
 
@@ -117,7 +118,7 @@ TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage recovery setup --json
 
 # Later, on a fresh profile (new device, same account):
 export A2=~/.telecrypt-io/storage-alice-newlaptop
-TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver http://localhost:8008 --user alice --password pw --json
-TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore "EsTx ...." --json
+TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://backend.telecrypt.io --oidc --json
+printf '%s' "$RECOVERY_KEY" | TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore --key-stdin --json
 TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage file download "$FOLDER_ID" '$...' ./recovered.pdf --json
 ```

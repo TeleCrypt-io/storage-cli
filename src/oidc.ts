@@ -70,7 +70,7 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
   const authMetadata = await withOidcWindowShim(() => discoverOidcIssuer(homeserver));
   if (!authMetadata.device_authorization_endpoint) {
     throw new CliError(
-      `${homeserver} does not advertise OIDC device-code support (no device_authorization_endpoint) — try password login instead.`,
+      `${homeserver} does not advertise required OIDC device-code support (no device_authorization_endpoint).`,
     );
   }
 
