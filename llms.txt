@@ -97,6 +97,6 @@ Agents should check exit code (0 = success, 1 = failure) and parse stderr for er
 
 3. **Files are end-to-end encrypted; the server never decrypts.** The server stores only the encrypted bytes. Even if an attacker gains access to the server's database, they see only ciphertext. Encryption keys are stored in the local profile (cross-signing keys + per-file keys derived from the folder's shared secret).
 
-4. **Session/profile is local.** The OIDC session and crypto store live in `~/.telecrypt-io/storage`. The CLI requires the profile directory and secret files to be current-user-owned, regular (not symlinked), and mode `0700`/`0600`; it rejects unsafe state. Logging out deletes the local profile. A new device means a new profile and the need to restore keys via `recovery restore`.
+4. **Session/profile is local.** The OIDC session and crypto store live in `~/.telecrypt-io/storage`. The CLI creates the profile directory and secret files with modes `0700`/`0600`; before loading, it requires current-user ownership, rejects symlinks/non-regular files, and rejects group/world access. Logging out deletes the local profile. A new device means a new profile and the need to restore keys via `recovery restore`.
 
 5. **Homeserver is required for login.** Always specify `--homeserver` with the full URL (e.g., `https://backend.telecrypt.io`). The CLI does not default to any public server; you must pass it explicitly.

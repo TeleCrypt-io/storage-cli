@@ -51,6 +51,12 @@ describe("secret-bearing CLI profile state", () => {
     expect(loadSnapshotFromDisk(cryptoSnapshotPath(dir))).toEqual({ dbs: [] });
   });
 
+  it("rejects an incomplete OIDC session", () => {
+    const dir = profileDir();
+    writeSession({ ...session(), refreshToken: "" }, dir);
+    expect(() => readSession(dir)).toThrow(/not a valid OIDC\/MAS session/);
+  });
+
   it("rejects a group-readable profile directory before loading state", () => {
     const dir = profileDir();
     fs.chmodSync(dir, 0o750);

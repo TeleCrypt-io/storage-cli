@@ -16,6 +16,10 @@ export interface Session {
   oidcTokenEndpoint: string;
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
 /**
  * Resolves the profile directory: everything this CLI persists (session,
  * crypto store) lives here. Overridable via TELECRYPT_IO_STORAGE_HOME so
@@ -96,14 +100,14 @@ export function readSession(dir: string = profileDir()): Session | null {
   if (!fs.existsSync(p)) return null;
   const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<Session>;
   if (
-    typeof parsed.homeserver !== "string" ||
-    typeof parsed.userId !== "string" ||
-    typeof parsed.deviceId !== "string" ||
-    typeof parsed.accessToken !== "string" ||
-    typeof parsed.refreshToken !== "string" ||
-    typeof parsed.oidcIssuer !== "string" ||
-    typeof parsed.oidcClientId !== "string" ||
-    typeof parsed.oidcTokenEndpoint !== "string"
+    !isNonEmptyString(parsed.homeserver) ||
+    !isNonEmptyString(parsed.userId) ||
+    !isNonEmptyString(parsed.deviceId) ||
+    !isNonEmptyString(parsed.accessToken) ||
+    !isNonEmptyString(parsed.refreshToken) ||
+    !isNonEmptyString(parsed.oidcIssuer) ||
+    !isNonEmptyString(parsed.oidcClientId) ||
+    !isNonEmptyString(parsed.oidcTokenEndpoint)
   ) {
     throw new Error("profile session is not a valid OIDC/MAS session; log in again");
   }
