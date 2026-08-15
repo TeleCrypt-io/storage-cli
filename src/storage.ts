@@ -17,6 +17,17 @@ export interface OpenedStorage {
   close: () => Promise<void>;
 }
 
+export function withRefreshedTokens(
+  session: Session,
+  tokens: { accessToken: string; refreshToken?: string },
+): Session {
+  return {
+    ...session,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken ?? session.refreshToken,
+  };
+}
+
 /**
  * Builds a TeleCryptIOStorage for the given OIDC/MAS session (persisted by
  * `storage login`, see src/oidc.ts) through `createFromOidc()` with
@@ -28,18 +39,16 @@ export interface OpenedStorage {
  * and persisted at login time (see src/oidc.ts).
  */
 async function buildStorageForSession(session: Session, dir: string): Promise<TeleCryptIOStorage> {
+  // OAuth providers may rotate a refresh token once and omit it from a later response. Track the
+  // latest persisted token set so a later omission cannot resurrect the pre-rotation token that
+  // was present when this CLI process started.
+  let currentSession = session;
   const tokenRefreshFunction = buildTokenRefreshFunction(
     session.oidcTokenEndpoint,
     session.oidcClientId,
     async (tokens) => {
-      writeSession(
-        {
-          ...session,
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken ?? session.refreshToken,
-        },
-        dir,
-      );
+      currentSession = withRefreshedTokens(currentSession, tokens);
+      writeSession(currentSession, dir);
     },
   );
 
