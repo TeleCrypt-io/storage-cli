@@ -35,12 +35,15 @@ function generateDeviceId(): string {
  * hand. */
 function tryOpenBrowser(url: string): void {
   const platform = process.platform;
-  const cmd = platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
+  // Windows' `start` is a cmd.exe builtin and would require a shell. Avoid
+  // passing an issuer-provided URL through a command interpreter; the URL is
+  // already printed for the user to open manually.
+  if (platform === "win32") return;
+  const cmd = platform === "darwin" ? "open" : "xdg-open";
   try {
-    const child = spawn(cmd, platform === "win32" ? ["", url] : [url], {
+    const child = spawn(cmd, [url], {
       detached: true,
       stdio: "ignore",
-      shell: platform === "win32",
     });
     child.unref();
   } catch {
@@ -70,7 +73,7 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
   const authMetadata = await withOidcWindowShim(() => discoverOidcIssuer(homeserver));
   if (!authMetadata.device_authorization_endpoint) {
     throw new CliError(
-      `${homeserver} does not advertise OIDC device-code support (no device_authorization_endpoint) — try password login instead.`,
+      `${homeserver} does not advertise required OIDC device-code support (no device_authorization_endpoint).`,
     );
   }
 
@@ -79,10 +82,9 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
     clientUri: "https://telecrypt.io/",
     applicationType: "native",
     // Device-code flow never redirects a browser back to us, so this URI is
-    // never actually dereferenced — it's a DCR-schema placeholder only.
-    // Unverified against production MAS's DCR policy (only exercised here
-    // against the local dev/test MAS, which allows insecure/mismatched URIs).
-    redirectUris: ["http://localhost:0/"],
+    // never dereferenced. Keep the required DCR value on the same trusted
+    // origin as clientUri so production issuers need no mismatch exception.
+    redirectUris: ["https://telecrypt.io/"],
     contacts: undefined,
     tosUri: undefined,
     policyUri: undefined,
@@ -96,11 +98,16 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
     verificationUriComplete: session.verification_uri_complete,
     userCode: session.user_code,
   });
-  tryOpenBrowser(session.verification_uri_complete ?? session.verification_uri);
+  if (!process.env.TELECRYPT_IO_STORAGE_NO_BROWSER) {
+    tryOpenBrowser(session.verification_uri_complete ?? session.verification_uri);
+  }
 
   const result = await waitForDeviceCodeLogin(authMetadata, clientId, session);
   if (isDeviceAccessTokenError(result)) {
     throw new CliError(`device login was not approved: ${result.error_description ?? result.error}`);
+  }
+  if (!result.refresh_token) {
+    throw new CliError("device login returned no refresh token");
   }
 
   const who = await whoAmI(homeserver, result.access_token);

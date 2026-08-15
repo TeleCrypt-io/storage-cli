@@ -29,7 +29,10 @@
  * (de)serialize rather than JSON.
  */
 import * as fs from "node:fs";
+import * as nodePath from "node:path";
 import * as v8 from "node:v8";
+import { randomUUID } from "node:crypto";
+import { assertSecureProfileFile, ensureProfileDir } from "./profile.js";
 
 interface IndexSpec {
   name: string;
@@ -205,6 +208,7 @@ export async function importIndexedDB(snapshot: CryptoSnapshot): Promise<void> {
 }
 
 export function loadSnapshotFromDisk(path: string): CryptoSnapshot | null {
+  assertSecureProfileFile(path);
   if (!fs.existsSync(path)) return null;
   const buf = fs.readFileSync(path);
   if (buf.length === 0) return null;
@@ -212,7 +216,22 @@ export function loadSnapshotFromDisk(path: string): CryptoSnapshot | null {
 }
 
 export function saveSnapshotToDisk(path: string, snapshot: CryptoSnapshot): void {
-  fs.writeFileSync(path, v8.serialize(snapshot), { mode: 0o600 });
+  ensureProfileDir(nodePath.dirname(path));
+  assertSecureProfileFile(path);
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const fd = fs.openSync(temporary, "wx", 0o600);
+    try {
+      fs.writeFileSync(fd, v8.serialize(snapshot));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temporary, path);
+  } finally {
+    if (fs.existsSync(temporary)) fs.rmSync(temporary);
+  }
+  assertSecureProfileFile(path);
 }
 
 /** Loads the on-disk snapshot (if any) into the current process's fake-indexeddb. */

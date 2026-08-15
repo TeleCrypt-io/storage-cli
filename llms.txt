@@ -23,11 +23,7 @@ All commands use the format `telecrypt-io --json storage <command>`. The `--json
 ### Session management
 
 **`login`** — Log in and persist the session to the local profile
-- `telecrypt-io --json storage login --homeserver https://backend.telecrypt.io --user alice --password secret` (password login)
-- `telecrypt-io --json storage login --homeserver https://backend.telecrypt.io --oidc` (OIDC/MAS device-code grant; opens browser for approval)
-
-**`register`** — Create a new account and log in (**dev/test only**; will not work against the public telecrypt.io server)
-- `telecrypt-io --json storage register --homeserver http://localhost:8008 --user bob --password secret`
+- `telecrypt-io --json storage login --homeserver https://backend.telecrypt.io` (OIDC/MAS device-code grant; opens browser for approval)
 
 **`whoami`** — Print the current session identity
 - `telecrypt-io --json storage whoami`
@@ -42,7 +38,7 @@ All commands use the format `telecrypt-io --json storage <command>`. The `--json
 - Output includes `recoveryKey` (a long string); **save this** — it is the only way to recover your files on a new device
 
 **`recovery restore`** — Restore keys on a new device from a Recovery Key
-- `telecrypt-io --json storage recovery restore RECOVERY_KEY_HERE`
+- `printf '%s' "$RECOVERY_KEY" | telecrypt-io --json storage recovery restore --key-stdin`
 
 ### Folders (shared storage spaces)
 
@@ -88,7 +84,7 @@ All commands with `--json` return structured JSON on success:
 On error (command exits with code 1):
 
 ```json
-{"error": "login failed: Invalid username or password"}
+{"error": "device login was not approved"}
 ```
 
 Agents should check exit code (0 = success, 1 = failure) and parse stderr for error JSON.
@@ -101,6 +97,6 @@ Agents should check exit code (0 = success, 1 = failure) and parse stderr for er
 
 3. **Files are end-to-end encrypted; the server never decrypts.** The server stores only the encrypted bytes. Even if an attacker gains access to the server's database, they see only ciphertext. Encryption keys are stored in the local profile (cross-signing keys + per-file keys derived from the folder's shared secret).
 
-4. **Session/profile is local.** The session and crypto store live in `~/.config/telecrypt-io/` (Linux/macOS) or `%APPDATA%\TeleCrypt.io` (Windows). Logging out deletes the local profile. A new device means a new profile and the need to restore keys via `recovery restore`.
+4. **Session/profile is local.** The OIDC session and crypto store live in `~/.telecrypt-io/storage`. The CLI creates the profile directory and secret files with modes `0700`/`0600`; before loading, it requires current-user ownership, rejects symlinks/non-regular files, and rejects group/world access. Logging out deletes the local profile. A new device means a new profile and the need to restore keys via `recovery restore`.
 
 5. **Homeserver is required for login.** Always specify `--homeserver` with the full URL (e.g., `https://backend.telecrypt.io`). The CLI does not default to any public server; you must pass it explicitly.

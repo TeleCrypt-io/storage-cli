@@ -17,11 +17,21 @@ export interface OpenedStorage {
   close: () => Promise<void>;
 }
 
+export function withRefreshedTokens(
+  session: Session,
+  tokens: { accessToken: string; refreshToken?: string },
+): Session {
+  return {
+    ...session,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken ?? session.refreshToken,
+  };
+}
+
 /**
- * Builds a TeleCryptIOStorage for the given session — plain password/access-
- * token sessions go through `create()`; sessions with an OIDC token set
- * (persisted by `storage login --oidc`, see src/oidc.ts) go through
- * `createFromOidc()` with a token refresh function wired to persist
+ * Builds a TeleCryptIOStorage for the given OIDC/MAS session (persisted by
+ * `storage login`, see src/oidc.ts) through `createFromOidc()` with
+ * a token refresh function wired to persist
  * refreshed tokens straight back to this profile's session.json, so a later
  * CLI invocation picks up the refreshed access token rather than the
  * (possibly now-expired) one this process started with. Needs no OIDC
@@ -29,27 +39,16 @@ export interface OpenedStorage {
  * and persisted at login time (see src/oidc.ts).
  */
 async function buildStorageForSession(session: Session, dir: string): Promise<TeleCryptIOStorage> {
-  if (!session.refreshToken || !session.oidcClientId || !session.oidcTokenEndpoint) {
-    return TeleCryptIOStorage.create({
-      baseUrl: session.homeserver,
-      userId: session.userId,
-      accessToken: session.accessToken,
-      deviceId: session.deviceId,
-    });
-  }
-
+  // OAuth providers may rotate a refresh token once and omit it from a later response. Track the
+  // latest persisted token set so a later omission cannot resurrect the pre-rotation token that
+  // was present when this CLI process started.
+  let currentSession = session;
   const tokenRefreshFunction = buildTokenRefreshFunction(
     session.oidcTokenEndpoint,
     session.oidcClientId,
     async (tokens) => {
-      writeSession(
-        {
-          ...session,
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken ?? session.refreshToken,
-        },
-        dir,
-      );
+      currentSession = withRefreshedTokens(currentSession, tokens);
+      writeSession(currentSession, dir);
     },
   );
 
@@ -131,7 +130,7 @@ export async function waitForBackupSettled(
   });
 }
 
-/** Used by login/register: builds storage for a brand-new session and
+/** Used by login: builds storage for a brand-new session and
  * establishes the initial (empty) crypto store snapshot on disk. */
 export async function initStorageForNewSession(
   session: Session,
