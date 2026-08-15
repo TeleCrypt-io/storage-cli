@@ -27,23 +27,35 @@ async function loginProfileOnce(
   user: LocalMasUser,
 ): Promise<{ userId: string; username: string; password: string }> {
   let approval: Promise<void> | undefined;
-  let approvalFailure: unknown;
-  const result = await runCli(
-    ["storage", "login", "--homeserver", HOMESERVER, "--json"],
-    {
-      TELECRYPT_IO_STORAGE_HOME: dir,
-      TELECRYPT_IO_STORAGE_NO_BROWSER: "1",
-    },
-    {
-      onStderr(stderr) {
-        const match = stderr.match(/and enter code: ([^\s]+)/);
-        if (!match || approval) return;
-        approval = approveDeviceCodeViaHttp(user.username, user.password, match[1]).catch((err) => {
-          approvalFailure = err;
-        });
-      },
-    },
+  let approvalFailure: Error | undefined;
+  const approvalAbort = new AbortController();
+  const approvalDeadline = setTimeout(
+    () => approvalAbort.abort(new Error("local MAS device approval timed out after 30s")),
+    30_000,
   );
+  let result;
+  try {
+    result = await runCli(
+      ["storage", "login", "--homeserver", HOMESERVER, "--json"],
+      {
+        TELECRYPT_IO_STORAGE_HOME: dir,
+        TELECRYPT_IO_STORAGE_NO_BROWSER: "1",
+      },
+      {
+        abortSignal: approvalAbort.signal,
+        onStderr(stderr) {
+          const match = stderr.match(/and enter code: ([^\s]+)/);
+          if (!match || approval) return;
+          approval = approveDeviceCodeViaHttp(user.username, user.password, match[1]).catch((err) => {
+            approvalFailure = new Error(`local MAS device approval failed: ${(err as Error).message}`);
+            approvalAbort.abort(approvalFailure);
+          });
+        },
+      },
+    );
+  } finally {
+    clearTimeout(approvalDeadline);
+  }
   if (!approval) throw new Error(`CLI did not print an OIDC device code: ${result.stderr}`);
   await approval;
   if (approvalFailure) throw approvalFailure;

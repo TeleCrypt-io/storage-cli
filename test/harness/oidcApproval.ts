@@ -15,9 +15,17 @@ function localMasUrl(location: string): URL {
 }
 
 function extractCsrf(html: string): string {
-  const match = html.match(/name="csrf" value="([^"]+)"/);
-  if (!match) throw new Error("approveDeviceCode: no CSRF token on MAS page");
-  return match[1];
+  // MAS 1.16 emits `<input type="hidden" name="csrf" value="…">`.
+  // Attribute order is not semantically meaningful, so do not couple this
+  // test-only browser-form adapter to one particular template serialization.
+  for (const match of html.matchAll(/<input\b[^>]*>/gi)) {
+    const input = match[0];
+    const name = input.match(/\bname\s*=\s*(["'])(.*?)\1/i)?.[2];
+    if (name !== "csrf") continue;
+    const value = input.match(/\bvalue\s*=\s*(["'])(.*?)\1/i)?.[2];
+    if (value) return value;
+  }
+  throw new Error("approveDeviceCode: no CSRF token on MAS page");
 }
 
 class CookieJar {
@@ -87,9 +95,11 @@ export async function approveDeviceCodeViaHttp(
   }
   await jar.follow(response);
 
-  response = await jar.get("/link");
-  csrf = extractCsrf(await response.text());
-  response = await jar.post("/link", { csrf, code: userCode });
+  // MAS 1.16's `/link` form is a GET carrying only the user code; it has no
+  // CSRF field. Keep the generated URL local and let localMasUrl validate it.
+  const linkUrl = new URL("/link", MAS_BASE);
+  linkUrl.searchParams.set("code", userCode);
+  response = await jar.get(`${linkUrl.pathname}${linkUrl.search}`);
   const devicePath = response.headers.get("location");
   if (response.status !== 303 || !devicePath) {
     throw new Error(`approveDeviceCode: device-link did not redirect (${response.status})`);

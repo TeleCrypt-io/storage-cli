@@ -19,6 +19,9 @@ export interface RunCliOptions {
   onStderr?: (stderr: string) => void;
   /** Explicit stdin for commands that intentionally read it. */
   stdin?: string;
+  /** Stops the child if test-only orchestration (such as local MAS approval)
+   * fails. The child is waited for so it cannot leak into a later scenario. */
+  abortSignal?: AbortSignal;
 }
 
 /** Spawns the CLI as a genuinely separate OS process (child_process.spawn),
@@ -34,6 +37,16 @@ export function runCli(
       env: { ...process.env, ...env },
       cwd: REPO_ROOT,
     });
+    let abortReason: Error | undefined;
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const requestAbort = () => {
+      const reason = options.abortSignal?.reason;
+      abortReason = reason instanceof Error ? reason : new Error("CLI test orchestration aborted");
+      child.kill("SIGTERM");
+      forceKill = setTimeout(() => child.kill("SIGKILL"), 5_000);
+    };
+    if (options.abortSignal?.aborted) requestAbort();
+    options.abortSignal?.addEventListener("abort", requestAbort, { once: true });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
@@ -42,8 +55,20 @@ export function runCli(
       options.onStderr?.(stderr);
     });
     child.stdin.end(options.stdin ?? "");
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    child.on("error", (err) => {
+      if (forceKill) clearTimeout(forceKill);
+      options.abortSignal?.removeEventListener("abort", requestAbort);
+      reject(abortReason ?? err);
+    });
+    child.on("close", (code) => {
+      if (forceKill) clearTimeout(forceKill);
+      options.abortSignal?.removeEventListener("abort", requestAbort);
+      if (abortReason) {
+        reject(abortReason);
+      } else {
+        resolve({ code: code ?? -1, stdout, stderr });
+      }
+    });
   });
 }
 
