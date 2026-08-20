@@ -93,8 +93,8 @@ export async function openStorage(dir: string = profileDir()): Promise<OpenedSto
 }
 
 /**
- * If server-side key backup is active for this account, waits (best-effort,
- * bounded) for the SDK's backup engine to report zero sessions remaining to
+ * If server-side key backup is active for this account, waits (bounded) for
+ * the SDK's backup engine to report zero sessions remaining to
  * upload. This matters specifically because a CLI command is a *short-lived
  * process*: the backup engine deliberately fire-and-forgets its upload loop
  * with a randomised 0-10s startup jitter (to avoid a multi-device thundering
@@ -102,8 +102,8 @@ export async function openStorage(dir: string = profileDir()): Promise<OpenedSto
  * or a file upload once recovery is already set up) and then exits
  * immediately can easily outrun that loop, leaving the new key silently
  * absent from the backup — recoverable-looking but not actually recoverable.
- * Never throws: this is a best-effort settle grace period, not a
- * correctness gate on the command's primary result.
+ * A timeout is an error: the command must not report success while a key may
+ * still be missing from the server-side backup.
  */
 export async function waitForBackupSettled(
   storage: TeleCryptIOStorage,
@@ -113,20 +113,24 @@ export async function waitForBackupSettled(
   if (!active) return;
 
   const client = storage.getClient();
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     let settled = false;
-    const finish = () => {
+    const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
       client.removeListener(CryptoEvent.KeyBackupSessionsRemaining, onRemaining);
       clearTimeout(timer);
-      resolve();
+      if (error) reject(error);
+      else resolve();
     };
     const onRemaining = (remaining: number) => {
       if (remaining === 0) finish();
     };
     client.on(CryptoEvent.KeyBackupSessionsRemaining, onRemaining);
-    const timer = setTimeout(finish, timeoutMs);
+    const timer = setTimeout(
+      () => finish(new CliError("key backup did not settle before timeout; retry the command")),
+      timeoutMs,
+    );
   });
 }
 

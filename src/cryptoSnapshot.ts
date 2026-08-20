@@ -64,6 +64,9 @@ export interface CryptoSnapshot {
   dbs: DbSnapshot[];
 }
 
+/** Prefix used by @telecrypt-io/storage for its rust-crypto databases. */
+export const TELECRYPT_CRYPTO_DATABASE_PREFIX = "telecrypt-io-storage::";
+
 function getIndexedDB(): IDBFactory {
   const idb = (globalThis as unknown as { indexedDB?: IDBFactory }).indexedDB;
   if (!idb) {
@@ -111,14 +114,14 @@ function readAllRecords(store: IDBObjectStore): Promise<StoreRecord[]> {
   });
 }
 
-/** Dumps every IndexedDB database currently visible to this process. */
+/** Dumps TeleCrypt crypto databases currently visible to this process. */
 export async function exportIndexedDB(): Promise<CryptoSnapshot> {
   const idb = getIndexedDB();
   const infos = await idb.databases();
   const dbs: DbSnapshot[] = [];
 
   for (const info of infos) {
-    if (!info.name) continue;
+    if (!info.name || !info.name.startsWith(TELECRYPT_CRYPTO_DATABASE_PREFIX)) continue;
     const db = await promisifyRequest(idb.open(info.name, info.version));
     try {
       const storeNames = Array.from(db.objectStoreNames);
@@ -158,12 +161,13 @@ export async function exportIndexedDB(): Promise<CryptoSnapshot> {
   return { dbs };
 }
 
-/** Recreates every database/store/index/record from a snapshot into the
- * current (assumed empty) IndexedDB factory. */
+/** Recreates each published TeleCrypt crypto database/store/index/record from
+ * a snapshot into the current (assumed empty) IndexedDB factory. */
 export async function importIndexedDB(snapshot: CryptoSnapshot): Promise<void> {
   const idb = getIndexedDB();
 
   for (const dbSnap of snapshot.dbs) {
+    if (!dbSnap.name.startsWith(TELECRYPT_CRYPTO_DATABASE_PREFIX)) continue;
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const req = idb.open(dbSnap.name, Math.max(dbSnap.version, 1));
       req.onupgradeneeded = () => {
