@@ -26,7 +26,7 @@ installer therefore does not need to resolve packages from the NPM registry. Nod
 3. Create and push a fresh immutable tag whose version exactly matches the manifest:
 
    ```sh
-   git tag storage-cli-vX.Y.Z
+   git tag -a storage-cli-vX.Y.Z -m "Release storage-cli-vX.Y.Z"
    git push origin storage-cli-vX.Y.Z
    ```
 
