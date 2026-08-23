@@ -4,6 +4,7 @@ import { TeleCryptIOStorage } from "@telecrypt-io/storage";
 import { cryptoSnapshotPath, ensureProfileDir, profileDir, readSession, writeSession, Session } from "./profile.js";
 import { persistCryptoStore, restoreCryptoStore } from "./cryptoSnapshot.js";
 import { buildTokenRefreshFunction, StorageError } from "@telecrypt-io/storage/core";
+import { assertOidcEndpoint } from "./oidc.js";
 
 export interface OpenedStorage {
   storage: TeleCryptIOStorage;
@@ -38,12 +39,16 @@ export function withRefreshedTokens(
  * and persisted at login time (see src/oidc.ts).
  */
 async function buildStorageForSession(session: Session, dir: string): Promise<TeleCryptIOStorage> {
+  // The endpoint is persisted at login time. Validate it again before constructing the client so a
+  // tampered profile cannot send refresh credentials to a different origin.
+  const tokenEndpoint = assertOidcEndpoint(session.oidcTokenEndpoint, session.homeserver, "OIDC token endpoint");
+
   // OAuth providers may rotate a refresh token once and omit it from a later response. Track the
   // latest persisted token set so a later omission cannot resurrect the pre-rotation token that
   // was present when this CLI process started.
   let currentSession = session;
   const tokenRefreshFunction = buildTokenRefreshFunction(
-    session.oidcTokenEndpoint,
+    tokenEndpoint,
     session.oidcClientId,
     async (tokens) => {
       currentSession = withRefreshedTokens(currentSession, tokens);
