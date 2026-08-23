@@ -1,6 +1,6 @@
 {
   "name": "@telecrypt-io/storage-cli",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
@@ -32,7 +32,7 @@
   "dependencies": {
     "commander": "15.0.0",
     "fake-indexeddb": "6.2.5",
-    "@telecrypt-io/storage": "0.3.0",
+    "@telecrypt-io/storage": "0.4.0",
     "matrix-js-sdk": "41.9.0"
   },
   "devDependencies": {

@@ -42,38 +42,52 @@ appear anywhere on the command line and enables machine-readable output (JSON on
 **`recovery restore`** — Restore keys on a new device from a Recovery Key
 - `printf '%s' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --key-stdin --json`
 
-### Folders (shared storage spaces)
+### Vaults (shared storage spaces)
 
-**`folder create`** — Create a new shared folder
-- `telecrypt-io storage folder create "My Secure Folder" --json`
+**`vault create`** — Create a new shared vault
+- `telecrypt-io storage vault create "My Secure Vault" --json`
 
-**`folder list`** — List folders you have access to
-- `telecrypt-io storage folder list --json`
+**`vault list`** — List vaults you have access to
+- `telecrypt-io storage vault list --json`
 
-**`folder join`** — Accept a pending folder invitation
-- `telecrypt-io storage folder join '!roomid:homeserver.io' --json`
+**`vault subfolder`** — Create, list, rename, or delete nested folders in a vault
+- `telecrypt-io storage vault subfolder create PARENT_ID "Documents" --json`
+- `telecrypt-io storage vault subfolder list PARENT_ID --json`
+- `telecrypt-io storage vault subfolder rename FOLDER_ID "Renamed" --json`
+- `telecrypt-io storage vault subfolder delete FOLDER_ID --json`
 
-**`folder share`** — Invite a user to a folder with a specific role
-- `telecrypt-io storage folder share '!roomid:homeserver.io' @alice:homeserver.io --json` (default: viewer role)
-- `telecrypt-io storage folder share '!roomid:homeserver.io' @alice:homeserver.io --role editor --json`
+**`vault join`** — Accept a pending vault invitation
+- `telecrypt-io storage vault join '!roomid:homeserver.io' --json`
 
-**`folder members`** — List participants and their roles in a folder
-- `telecrypt-io storage folder members '!roomid:homeserver.io' --json`
+**`vault share`** — Invite a user to a vault with a specific role
+- `telecrypt-io storage vault share '!roomid:homeserver.io' @alice:homeserver.io --json` (default: viewer role)
+- `telecrypt-io storage vault share '!roomid:homeserver.io' @alice:homeserver.io --role editor --json`
 
-**`folder unshare`** — Remove a participant from a folder
-- `telecrypt-io storage folder unshare '!roomid:homeserver.io' @alice:homeserver.io --json`
+**`vault members`** — List participants and their roles in a vault
+- `telecrypt-io storage vault members '!roomid:homeserver.io' --json`
+
+**`vault unshare`** — Remove a participant from a vault
+- `telecrypt-io storage vault unshare '!roomid:homeserver.io' @alice:homeserver.io --json`
+
+**`vault rename` / `vault delete`** — Rename or delete a top-level vault
+- `telecrypt-io storage vault rename '!roomid:homeserver.io' "Renamed Vault" --json`
+- `telecrypt-io storage vault delete '!roomid:homeserver.io' --json`
 
 ### File operations
 
-**`file upload`** — Encrypt and upload a local file into a folder
-- `telecrypt-io storage file upload '!roomid:homeserver.io' /path/to/document.pdf --json`
-- `telecrypt-io storage file upload '!roomid:homeserver.io' /path/to/document.pdf --name "My Document" --json` (custom name)
+**`file upload`** — Encrypt and upload a local file into a vault or folder
+- `telecrypt-io storage file upload TREE_ID /path/to/document.pdf --json`
+- `telecrypt-io storage file upload TREE_ID /path/to/document.pdf --name "My Document" --json` (custom name)
 
-**`file list`** — List files in a folder
-- `telecrypt-io storage file list '!roomid:homeserver.io' --json`
+**`file list`** — List files in a vault or folder
+- `telecrypt-io storage file list TREE_ID --json`
 
 **`file download`** — Download and decrypt a file to a local path
-- `telecrypt-io storage file download '!roomid:homeserver.io' FILE_ID /path/to/dest --json`
+- `telecrypt-io storage file download TREE_ID FILE_ID /path/to/dest --json`
+
+**`file rename` / `file delete`** — Rename or delete a file in a vault or folder
+- `telecrypt-io storage file rename TREE_ID FILE_ID "Renamed" --json`
+- `telecrypt-io storage file delete TREE_ID FILE_ID --json`
 
 ## Machine-readable output
 
@@ -95,9 +109,9 @@ Agents should check exit code (0 = success, 1 = failure) and parse stderr for er
 
 1. **Recovery Key is irreplaceable.** After `recovery setup`, the output includes `recoveryKey`: a long string. Save it somewhere persistent and retrievable. It is the **only** way to recover your files if you log in on a new device or factory-reset your current one. If lost, your keys are gone forever.
 
-2. **Sharing uses Matrix User IDs.** When sharing a folder with `folder share`, the recipient must be identified by their full Matrix User ID (e.g., `@alice:homeserver.io`), not just a username. You must know their homeserver to construct the ID.
+2. **Sharing uses Matrix User IDs.** When sharing a vault with `vault share`, the recipient must be identified by their full Matrix User ID (e.g., `@alice:homeserver.io`), not just a username. You must know their homeserver to construct the ID.
 
-3. **Files are end-to-end encrypted; the server never decrypts.** The server stores only the encrypted bytes. Even if an attacker gains access to the server's database, they see only ciphertext. Encryption keys are stored in the local profile (cross-signing keys + per-file keys derived from the folder's shared secret).
+3. **Files are end-to-end encrypted; the server never decrypts.** The server stores only the encrypted bytes. Even if an attacker gains access to the server's database, they see only ciphertext. Encryption keys are stored in the local profile (cross-signing keys + per-file keys derived from the vault's shared secret).
 
 4. **Session/profile is local.** The OIDC session and crypto store live in `~/.telecrypt-io/storage`. The CLI creates the profile directory and secret files with modes `0700`/`0600`; before loading, it requires current-user ownership, rejects symlinks/non-regular files, and rejects group/world access. Logging out deletes the local profile. A new device means a new profile and the need to restore keys via `recovery restore`.
 

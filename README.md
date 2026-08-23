@@ -3,7 +3,7 @@
 The command-line interface for TeleCrypt.io end-to-end encrypted Matrix storage.
 
 It consumes one exact public `@telecrypt-io/storage` library version and provides the
-`telecrypt-io storage` command group: login, recovery, shared folders and subfolders, and file
+`telecrypt-io storage` command group: login, recovery, shared vaults and nested folders, and file
 upload, download, rename, and deletion. Its real-stack Harness scenarios exercise these same SDK
 operations as the web UI; they are operator-local acceptance tests, never hosted CI.
 
@@ -25,9 +25,9 @@ This installs the `telecrypt-io` executable. The library source is in
 
 ```bash
 telecrypt-io storage login --homeserver https://backend.telecrypt.io
-telecrypt-io storage folder create Photos
-telecrypt-io storage file upload <folderId> ./cat.jpg
-telecrypt-io storage folder share <folderId> @bob:your.server --role editor
+telecrypt-io storage vault create Photos
+telecrypt-io storage file upload <vaultId> ./cat.jpg
+telecrypt-io storage vault share <vaultId> @bob:your.server --role editor
 telecrypt-io storage recovery setup     # prints your Recovery Key — save it
 ```
 

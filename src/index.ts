@@ -298,19 +298,62 @@ recovery
   });
 
 // ---------------------------------------------------------------------------
-// Folders
+// Vaults
 // ---------------------------------------------------------------------------
 
-const folder = storage.command("folder").description("Shared folder operations");
+const vault = storage.command("vault").description("Shared vault operations");
 
-folder
+vault
   .command("create <name>")
-  .description("Create a new shared folder")
+  .description("Create a new shared vault")
   .action(async (name: string, _opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const result = await core.createFolder(opened.storage, name);
+        const result = await core.createVault(opened.storage, name);
+        return {
+          json: { ...result },
+          text: `Created vault "${result.name}" (${result.id})`,
+        };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+vault
+  .command("list")
+  .description("List vaults visible to the current user")
+  .action(async (_opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const vaults = await core.listVaults(opened.storage);
+        return {
+          json: { vaults },
+          text:
+            vaults.length === 0
+              ? "(no vaults)"
+              : vaults.map((f) => `${f.id}\t${f.name}`).join("\n"),
+        };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+const subfolder = vault
+  .command("subfolder")
+  .description("Operations on folders within a shared vault");
+
+subfolder
+  .command("create <parentId> <name>")
+  .description("Create a folder within a shared vault")
+  .action(async (parentId: string, name: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.createSubfolder(opened.storage, parentId, name);
         return {
           json: { ...result },
           text: `Created folder "${result.name}" (${result.id})`,
@@ -321,14 +364,14 @@ folder
     });
   });
 
-folder
-  .command("list")
-  .description("List folders visible to the current user")
-  .action(async (_opts, command: Command) => {
+subfolder
+  .command("list <parentId>")
+  .description("List direct folders of a shared vault")
+  .action(async (parentId: string, _opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const folders = await core.listFolders(opened.storage);
+        const folders = await core.listSubfolders(opened.storage, parentId);
         return {
           json: { folders },
           text:
@@ -342,124 +385,9 @@ folder
     });
   });
 
-const subfolder = folder
-  .command("subfolder")
-  .description("Operations on subfolders within a shared folder");
-
 subfolder
-  .command("create <folderId> <name>")
-  .description("Create a subfolder within a shared folder")
-  .action(async (folderId: string, name: string, _opts, command: Command) => {
-    await runAction(command, async (): Promise<CommandResult> => {
-      const opened = await openStorage();
-      try {
-        const result = await core.createSubfolder(opened.storage, folderId, name);
-        return {
-          json: { ...result },
-          text: `Created subfolder "${result.name}" (${result.id})`,
-        };
-      } finally {
-        await opened.close();
-      }
-    });
-  });
-
-subfolder
-  .command("list <folderId>")
-  .description("List direct subfolders of a shared folder")
-  .action(async (folderId: string, _opts, command: Command) => {
-    await runAction(command, async (): Promise<CommandResult> => {
-      const opened = await openStorage();
-      try {
-        const folders = await core.listSubfolders(opened.storage, folderId);
-        return {
-          json: { folders },
-          text:
-            folders.length === 0
-              ? "(no subfolders)"
-              : folders.map((f) => `${f.id}\t${f.name}`).join("\n"),
-        };
-      } finally {
-        await opened.close();
-      }
-    });
-  });
-
-folder
-  .command("join <folderId>")
-  .description("Accept a pending folder invitation (join the room)")
-  .action(async (folderId: string, _opts, command: Command) => {
-    await runAction(command, async (): Promise<CommandResult> => {
-      const opened = await openStorage();
-      try {
-        const result = await core.joinFolder(opened.storage, folderId);
-        return { json: { ...result }, text: `Joined folder ${result.folderId}` };
-      } finally {
-        await opened.close();
-      }
-    });
-  });
-
-folder
-  .command("share <folderId> <userId>")
-  .description("Invite a participant to a shared folder at a given role")
-  .option("--role <role>", "viewer or editor", "viewer")
-  .action(async (folderId: string, userId: string, opts, command: Command) => {
-    await runAction(command, async (): Promise<CommandResult> => {
-      // Validate before opening storage so a bad --role fails fast. The core
-      // operation repeats the check for callers outside this CLI.
-      if (opts.role !== "viewer" && opts.role !== "editor") {
-        throw new StorageError(`invalid --role "${opts.role}" (must be viewer or editor)`);
-      }
-      const opened = await openStorage();
-      try {
-        const result = await core.shareFolder(opened.storage, folderId, userId, opts.role);
-        return {
-          json: { ...result },
-          text: `Invited ${result.userId} to ${result.folderId} as ${result.role}`,
-        };
-      } finally {
-        await opened.close();
-      }
-    });
-  });
-
-folder
-  .command("members <folderId>")
-  .description("List participants and their roles")
-  .action(async (folderId: string, _opts, command: Command) => {
-    await runAction(command, async (): Promise<CommandResult> => {
-      const opened = await openStorage();
-      try {
-        const members = await core.listMembers(opened.storage, folderId);
-        return {
-          json: { members },
-          text: members.map((m) => `${m.userId}\t${m.role}\t${m.membership}`).join("\n"),
-        };
-      } finally {
-        await opened.close();
-      }
-    });
-  });
-
-folder
-  .command("unshare <folderId> <userId>")
-  .description("Remove a participant from a shared folder")
-  .action(async (folderId: string, userId: string, _opts, command: Command) => {
-    await runAction(command, async (): Promise<CommandResult> => {
-      const opened = await openStorage();
-      try {
-        const result = await core.unshareFolder(opened.storage, folderId, userId);
-        return { json: { ...result }, text: `Removed ${result.userId} from ${result.folderId}` };
-      } finally {
-        await opened.close();
-      }
-    });
-  });
-
-folder
   .command("rename <folderId> <name>")
-  .description("Rename a folder or subfolder")
+  .description("Rename a folder")
   .action(async (folderId: string, name: string, _opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
@@ -472,9 +400,9 @@ folder
     });
   });
 
-folder
+subfolder
   .command("delete <folderId>")
-  .description("Delete a folder or subfolder")
+  .description("Delete a folder")
   .action(async (folderId: string, _opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
@@ -487,17 +415,119 @@ folder
     });
   });
 
+vault
+  .command("join <vaultId>")
+  .description("Accept a pending vault invitation (join the room)")
+  .action(async (vaultId: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.joinVault(opened.storage, vaultId);
+        return { json: { ...result }, text: `Joined vault ${result.vaultId}` };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+vault
+  .command("share <vaultId> <userId>")
+  .description("Invite a participant to a shared vault at a given role")
+  .option("--role <role>", "viewer or editor", "viewer")
+  .action(async (vaultId: string, userId: string, opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      // Validate before opening storage so a bad --role fails fast. The core
+      // operation repeats the check for callers outside this CLI.
+      if (opts.role !== "viewer" && opts.role !== "editor") {
+        throw new StorageError(`invalid --role "${opts.role}" (must be viewer or editor)`);
+      }
+      const opened = await openStorage();
+      try {
+        const result = await core.shareVault(opened.storage, vaultId, userId, opts.role);
+        return {
+          json: { ...result },
+          text: `Invited ${result.userId} to ${result.vaultId} as ${result.role}`,
+        };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+vault
+  .command("members <vaultId>")
+  .description("List participants and their roles")
+  .action(async (vaultId: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const members = await core.listMembers(opened.storage, vaultId);
+        return {
+          json: { members },
+          text: members.map((m) => `${m.userId}\t${m.role}\t${m.membership}`).join("\n"),
+        };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+vault
+  .command("unshare <vaultId> <userId>")
+  .description("Remove a participant from a shared vault")
+  .action(async (vaultId: string, userId: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.unshareVault(opened.storage, vaultId, userId);
+        return { json: { ...result }, text: `Removed ${result.userId} from ${result.vaultId}` };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+vault
+  .command("rename <vaultId> <name>")
+  .description("Rename a vault")
+  .action(async (vaultId: string, name: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.renameVault(opened.storage, vaultId, name);
+        return { json: { ...result }, text: `Renamed vault ${result.id} to "${result.name}"` };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
+vault
+  .command("delete <vaultId>")
+  .description("Delete a vault")
+  .action(async (vaultId: string, _opts, command: Command) => {
+    await runAction(command, async (): Promise<CommandResult> => {
+      const opened = await openStorage();
+      try {
+        const result = await core.deleteVault(opened.storage, vaultId);
+        return { json: { ...result }, text: `Deleted vault ${result.id}` };
+      } finally {
+        await opened.close();
+      }
+    });
+  });
+
 // ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
 
-const file = storage.command("file").description("File operations within a folder");
+const file = storage.command("file").description("File operations within a vault or folder");
 
 file
-  .command("upload <folderId> <path>")
-  .description("Encrypt and upload a local file into a folder")
+  .command("upload <treeId> <path>")
+  .description("Encrypt and upload a local file into a vault or folder")
   .option("--name <name>", "Name to store the file as (default: basename of path)")
-  .action(async (folderId: string, filePath: string, opts, command: Command) => {
+  .action(async (treeId: string, filePath: string, opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       if (!fs.existsSync(filePath)) {
         throw new StorageError(`file not found: ${filePath}`);
@@ -508,7 +538,7 @@ file
         const data = fs.readFileSync(filePath);
         const result = await core.uploadFile(
           opened.storage,
-          folderId,
+          treeId,
           name,
           data,
           guessMimetype(filePath),
@@ -528,13 +558,13 @@ file
   });
 
 file
-  .command("list <folderId>")
-  .description("List files in a folder")
-  .action(async (folderId: string, _opts, command: Command) => {
+  .command("list <treeId>")
+  .description("List files in a vault or folder")
+  .action(async (treeId: string, _opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const files = await core.listFiles(opened.storage, folderId);
+        const files = await core.listFiles(opened.storage, treeId);
         return {
           json: { files },
           text: files.length === 0 ? "(no files)" : files.map((f) => `${f.id}\t${f.name}`).join("\n"),
@@ -546,13 +576,13 @@ file
   });
 
 file
-  .command("download <folderId> <fileId> <destPath>")
+  .command("download <treeId> <fileId> <destPath>")
   .description("Download and decrypt a file to a local path")
-  .action(async (folderId: string, fileId: string, destPath: string, _opts, command: Command) => {
+  .action(async (treeId: string, fileId: string, destPath: string, _opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const result = await core.downloadFile(opened.storage, folderId, fileId);
+        const result = await core.downloadFile(opened.storage, treeId, fileId);
         fs.writeFileSync(destPath, Buffer.from(result.bytes));
         return {
           json: { path: destPath, bytes: result.bytes.byteLength, mimetype: result.mimetype },
@@ -565,13 +595,13 @@ file
   });
 
 file
-  .command("rename <folderId> <fileId> <name>")
+  .command("rename <treeId> <fileId> <name>")
   .description("Rename a file")
-  .action(async (folderId: string, fileId: string, name: string, _opts, command: Command) => {
+  .action(async (treeId: string, fileId: string, name: string, _opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const result = await core.renameFile(opened.storage, folderId, fileId, name);
+        const result = await core.renameFile(opened.storage, treeId, fileId, name);
         return { json: { ...result }, text: `Renamed file ${result.id} to "${result.name}"` };
       } finally {
         await opened.close();
@@ -580,13 +610,13 @@ file
   });
 
 file
-  .command("delete <folderId> <fileId>")
+  .command("delete <treeId> <fileId>")
   .description("Delete a file")
-  .action(async (folderId: string, fileId: string, _opts, command: Command) => {
+  .action(async (treeId: string, fileId: string, _opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const opened = await openStorage();
       try {
-        const result = await core.deleteFile(opened.storage, folderId, fileId);
+        const result = await core.deleteFile(opened.storage, treeId, fileId);
         return { json: { ...result }, text: `Deleted file ${result.id}` };
       } finally {
         await opened.close();

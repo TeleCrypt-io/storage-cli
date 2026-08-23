@@ -106,16 +106,16 @@ describe("CLI", () => {
       expect(recoverySetup.code).toBe(0);
       expect(typeof recoverySetup.json.recoveryKey).toBe("string");
 
-      const folderRes = await cliJson(["storage", "folder", "create", "PersistFolder"], env);
-      expect(folderRes.code).toBe(0);
-      const folderId = folderRes.json.id as string;
-      expect(folderId).toBeTruthy();
+      const vaultRes = await cliJson(["storage", "vault", "create", "PersistVault"], env);
+      expect(vaultRes.code).toBe(0);
+      const vaultId = vaultRes.json.id as string;
+      expect(vaultId).toBeTruthy();
 
       const srcPath = path.join(dir, "source.txt");
       const originalBytes = `cross-process proof ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
 
-      const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], env);
+      const uploadRes = await cliJson(["storage", "file", "upload", vaultId, srcPath], env);
       expect(uploadRes.code).toBe(0);
       const fileId = uploadRes.json.id as string;
       expect(fileId).toBeTruthy();
@@ -125,7 +125,7 @@ describe("CLI", () => {
       // would throw a decryption error (empty megolm store).
       const destPath = path.join(dir, "downloaded.txt");
       const downloadRes = await cliJson(
-        ["storage", "file", "download", folderId, fileId, destPath],
+        ["storage", "file", "download", vaultId, fileId, destPath],
         env,
       );
       expect(downloadRes.code).toBe(0);
@@ -137,7 +137,7 @@ describe("CLI", () => {
   );
 
   it(
-    "CLI.2 multi-participant shared folder: B uploads, A downloads B's file byte-identical; uninvited C cannot list it",
+    "CLI.2 multi-participant shared vault: B uploads, A downloads B's file byte-identical; uninvited C cannot list it",
     async () => {
       const dirA = freshProfileDir("multiA");
       const dirB = freshProfileDir("multiB");
@@ -150,25 +150,25 @@ describe("CLI", () => {
       const userB = await registerProfile(dirB, "multiB");
       await registerProfile(dirC, "multiC");
 
-      const folderRes = await cliJson(["storage", "folder", "create", "Shared"], envA);
-      expect(folderRes.code).toBe(0);
-      const folderId = folderRes.json.id as string;
+      const vaultRes = await cliJson(["storage", "vault", "create", "Shared"], envA);
+      expect(vaultRes.code).toBe(0);
+      const vaultId = vaultRes.json.id as string;
 
       const shareRes = await cliJson(
-        ["storage", "folder", "share", folderId, userB.userId, "--role", "editor"],
+        ["storage", "vault", "share", vaultId, userB.userId, "--role", "editor"],
         envA,
       );
       expect(shareRes.code).toBe(0);
-      expect(shareRes.json).toMatchObject({ folderId, userId: userB.userId, role: "editor" });
+      expect(shareRes.json).toMatchObject({ vaultId, userId: userB.userId, role: "editor" });
 
-      const joinRes = await cliJson(["storage", "folder", "join", folderId], envB);
+      const joinRes = await cliJson(["storage", "vault", "join", vaultId], envB);
       expect(joinRes.code).toBe(0);
 
       const srcPath = path.join(dirB, "from-b.txt");
       const originalBytes = `B's file ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
 
-      const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], envB);
+      const uploadRes = await cliJson(["storage", "file", "upload", vaultId, srcPath], envB);
       expect(uploadRes.code).toBe(0);
       const fileId = uploadRes.json.id as string;
 
@@ -180,7 +180,7 @@ describe("CLI", () => {
       const destPath = path.join(dirA, "from-b-downloaded.txt");
       const downloadResult = await waitFor(
         async () => {
-          const res = await cliJson(["storage", "file", "download", folderId, fileId, destPath], envA);
+          const res = await cliJson(["storage", "file", "download", vaultId, fileId, destPath], envA);
           return res.code === 0 ? res : null;
         },
         { label: "A decrypts B's file", timeoutMs: 30000, intervalMs: 1500 },
@@ -189,17 +189,17 @@ describe("CLI", () => {
       const downloadedBytes = fs.readFileSync(destPath, "utf8");
       expect(downloadedBytes).toBe(originalBytes);
 
-      // C was never invited: cannot see the folder at all.
-      const listC = await cliJson(["storage", "folder", "list"], envC);
+      // C was never invited: cannot see the vault at all.
+      const listC = await cliJson(["storage", "vault", "list"], envC);
       expect(listC.code).toBe(0);
-      const folders = listC.json.folders as { id: string }[];
-      expect(folders.some((f) => f.id === folderId)).toBe(false);
+      const vaults = listC.json.vaults as { id: string }[];
+      expect(vaults.some((f) => f.id === vaultId)).toBe(false);
     },
     90000,
   );
 
   it(
-    "CLI.3 folder members reports the right participants and roles",
+    "CLI.3 vault members reports the right participants and roles",
     async () => {
       const dirA = freshProfileDir("membersA");
       const dirB = freshProfileDir("membersB");
@@ -209,15 +209,15 @@ describe("CLI", () => {
       const userA = await registerProfile(dirA, "membersA");
       const userB = await registerProfile(dirB, "membersB");
 
-      const folderRes = await cliJson(["storage", "folder", "create", "Roles"], envA);
-      const folderId = folderRes.json.id as string;
+      const vaultRes = await cliJson(["storage", "vault", "create", "Roles"], envA);
+      const vaultId = vaultRes.json.id as string;
 
-      await cliJson(["storage", "folder", "share", folderId, userB.userId, "--role", "viewer"], envA);
-      await cliJson(["storage", "folder", "join", folderId], envB);
+      await cliJson(["storage", "vault", "share", vaultId, userB.userId, "--role", "viewer"], envA);
+      await cliJson(["storage", "vault", "join", vaultId], envB);
 
       const membersRes = await waitFor(
         async () => {
-          const res = await cliJson(["storage", "folder", "members", folderId], envA);
+          const res = await cliJson(["storage", "vault", "members", vaultId], envA);
           const members = (res.json.members as { userId: string; role: string }[]) ?? [];
           return members.length >= 2 ? res : null;
         },
@@ -232,11 +232,11 @@ describe("CLI", () => {
       expect(viewer?.role).toBe("viewer");
       expect(viewer?.membership).toBe("join");
 
-      // Promote to editor and confirm `folder members` reflects it.
-      await cliJson(["storage", "folder", "share", folderId, userB.userId, "--role", "editor"], envA);
+      // Promote to editor and confirm `vault members` reflects it.
+      await cliJson(["storage", "vault", "share", vaultId, userB.userId, "--role", "editor"], envA);
       const updated = await waitFor(
         async () => {
-          const res = await cliJson(["storage", "folder", "members", folderId], envA);
+          const res = await cliJson(["storage", "vault", "members", vaultId], envA);
           const m = (res.json.members as { userId: string; role: string }[]).find(
             (x) => x.userId === userB.userId,
           );
@@ -260,13 +260,13 @@ describe("CLI", () => {
 
       const user = await registerProfile(dir1, "recover");
 
-      const folderRes = await cliJson(["storage", "folder", "create", "RecoverMe"], env1);
-      const folderId = folderRes.json.id as string;
+      const vaultRes = await cliJson(["storage", "vault", "create", "RecoverMe"], env1);
+      const vaultId = vaultRes.json.id as string;
 
       const srcPath = path.join(dir1, "important.txt");
       const originalBytes = `recoverable content ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
-      const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], env1);
+      const uploadRes = await cliJson(["storage", "file", "upload", vaultId, srcPath], env1);
       const fileId = uploadRes.json.id as string;
 
       const setupRes = await cliJson(["storage", "recovery", "setup"], env1);
@@ -306,10 +306,10 @@ describe("CLI", () => {
       const destPath = path.join(dir2, "recovered.txt");
       const beforeRestore = await waitFor(
         async () => {
-          // Poll until the folder/file are at least *visible* to device 2
+          // Poll until the vault/file are at least *visible* to device 2
           // (independent of decryption), so the eventual failure below is a
-          // genuine decryption failure, not "folder not found yet".
-          const listing = await cliJson(["storage", "file", "list", folderId], env2);
+          // genuine decryption failure, not "vault not found yet".
+          const listing = await cliJson(["storage", "file", "list", vaultId], env2);
           const files = (listing.json.files as { id: string }[] | undefined) ?? [];
           return files.some((f) => f.id === fileId) ? listing : null;
         },
@@ -317,7 +317,7 @@ describe("CLI", () => {
       );
       expect(beforeRestore.code).toBe(0);
       const failedDownload = await cliJson(
-        ["storage", "file", "download", folderId, fileId, destPath],
+        ["storage", "file", "download", vaultId, fileId, destPath],
         env2,
       );
       expect(failedDownload.code).not.toBe(0);
@@ -334,7 +334,7 @@ describe("CLI", () => {
 
       const recovered = await waitFor(
         async () => {
-          const res = await cliJson(["storage", "file", "download", folderId, fileId, destPath], env2);
+          const res = await cliJson(["storage", "file", "download", vaultId, fileId, destPath], env2);
           return res.code === 0 ? res : null;
         },
         { label: "device 2 decrypts after restore", timeoutMs: 20000 },
@@ -346,34 +346,34 @@ describe("CLI", () => {
   );
 
   it(
-    "CLI.5 UI-equivalent tree operations: subfolders and files can be created, renamed, listed, and deleted",
+    "CLI.5 UI-equivalent tree operations: folders and files can be created, renamed, listed, and deleted",
     async () => {
       const dir = freshProfileDir("tree");
       const env = { TELECRYPT_IO_STORAGE_HOME: dir };
       await registerProfile(dir, "tree");
 
-      const parent = await cliJson(["storage", "folder", "create", "Parent"], env);
+      const parent = await cliJson(["storage", "vault", "create", "Parent"], env);
       expect(parent.code).toBe(0);
       const parentId = parent.json.id as string;
 
       const child = await cliJson(
-        ["storage", "folder", "subfolder", "create", parentId, "Child"],
+        ["storage", "vault", "subfolder", "create", parentId, "Child"],
         env,
       );
       expect(child.code).toBe(0);
       const childId = child.json.id as string;
 
-      const initialSubfolders = await cliJson(
-        ["storage", "folder", "subfolder", "list", parentId],
+      const initialFolders = await cliJson(
+        ["storage", "vault", "subfolder", "list", parentId],
         env,
       );
-      expect(initialSubfolders.code).toBe(0);
-      expect(initialSubfolders.json.folders).toEqual(
+      expect(initialFolders.code).toBe(0);
+      expect(initialFolders.json.folders).toEqual(
         expect.arrayContaining([expect.objectContaining({ id: childId, name: "Child" })]),
       );
 
       const renameChild = await cliJson(
-        ["storage", "folder", "rename", childId, "Child Renamed"],
+        ["storage", "vault", "subfolder", "rename", childId, "Child Renamed"],
         env,
       );
       expect(renameChild.code).toBe(0);
@@ -402,18 +402,18 @@ describe("CLI", () => {
       expect(deleteFile.code).toBe(0);
       expect(deleteFile.json).toMatchObject({ id: fileId, deleted: true });
 
-      const deleteChild = await cliJson(["storage", "folder", "delete", childId], env);
+      const deleteChild = await cliJson(["storage", "vault", "subfolder", "delete", childId], env);
       expect(deleteChild.code).toBe(0);
       expect(deleteChild.json).toMatchObject({ id: childId, deleted: true });
 
       const renameParent = await cliJson(
-        ["storage", "folder", "rename", parentId, "Parent Renamed"],
+        ["storage", "vault", "rename", parentId, "Parent Renamed"],
         env,
       );
       expect(renameParent.code).toBe(0);
       expect(renameParent.json).toMatchObject({ id: parentId, name: "Parent Renamed" });
 
-      const deleteParent = await cliJson(["storage", "folder", "delete", parentId], env);
+      const deleteParent = await cliJson(["storage", "vault", "delete", parentId], env);
       expect(deleteParent.code).toBe(0);
       expect(deleteParent.json).toMatchObject({ id: parentId, deleted: true });
     },
@@ -458,11 +458,11 @@ describe("CLI", () => {
         await registerProfile(dir, "missingfile");
         const env = { TELECRYPT_IO_STORAGE_HOME: dir };
 
-        const folderRes = await cliJson(["storage", "folder", "create", "Empty"], env);
-        const folderId = folderRes.json.id as string;
+        const vaultRes = await cliJson(["storage", "vault", "create", "Empty"], env);
+        const vaultId = vaultRes.json.id as string;
 
         const res = await cliJson(
-          ["storage", "file", "download", folderId, "$doesnotexist12345", path.join(dir, "out.txt")],
+          ["storage", "file", "download", vaultId, "$doesnotexist12345", path.join(dir, "out.txt")],
           env,
         );
         expect(res.code).not.toBe(0);

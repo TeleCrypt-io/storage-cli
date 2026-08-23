@@ -1,7 +1,7 @@
 # `telecrypt-io` CLI
 
 A terminal CLI over the `TeleCryptIOStorage` library: log in, set up recovery, create shared
-folders, invite participants, and upload/download end-to-end encrypted files — all driven
+vaults, invite participants, and upload/download end-to-end encrypted files — all driven
 entirely by the library (this CLI does not reimplement crypto or Matrix logic). All commands live
 under the `storage` namespace (`telecrypt-io storage ...`).
 
@@ -58,34 +58,37 @@ telecrypt-io storage recovery restore                 # hidden Recovery Key prom
 printf '%s' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --key-stdin
 ```
 
-### Folders
+### Vaults
 
 ```sh
-telecrypt-io storage folder create <name>
-telecrypt-io storage folder list
-telecrypt-io storage folder subfolder create <folderId> <name>
-telecrypt-io storage folder subfolder list <folderId>
-telecrypt-io storage folder share <folderId> <userId> [--role viewer|editor]   # default: viewer
-telecrypt-io storage folder join <folderId>            # accept a pending invite
-telecrypt-io storage folder members <folderId>         # participants + roles
-telecrypt-io storage folder unshare <folderId> <userId>
-telecrypt-io storage folder rename <folderId> <name>
-telecrypt-io storage folder delete <folderId>
+telecrypt-io storage vault create <name>
+telecrypt-io storage vault list
+telecrypt-io storage vault subfolder create <parentId> <name>
+telecrypt-io storage vault subfolder list <parentId>
+telecrypt-io storage vault subfolder rename <folderId> <name>
+telecrypt-io storage vault subfolder delete <folderId>
+telecrypt-io storage vault share <vaultId> <userId> [--role viewer|editor]   # default: viewer
+telecrypt-io storage vault join <vaultId>            # accept a pending invite
+telecrypt-io storage vault members <vaultId>         # participants + roles
+telecrypt-io storage vault unshare <vaultId> <userId>
+telecrypt-io storage vault rename <vaultId> <name>
+telecrypt-io storage vault delete <vaultId>
 ```
 
-`folder share` can also be re-run against an existing participant to change their role.
+`vault share` can also be re-run against an existing participant to change their role. The
+`subfolder` commands manage nested directory nodes within a vault.
 
 ### Files
 
 ```sh
-telecrypt-io storage file upload <folderId> <path> [--name <name>]
-telecrypt-io storage file list <folderId>
-telecrypt-io storage file download <folderId> <fileId> <destPath>
-telecrypt-io storage file rename <folderId> <fileId> <name>
-telecrypt-io storage file delete <folderId> <fileId>
+telecrypt-io storage file upload <treeId> <path> [--name <name>]
+telecrypt-io storage file list <treeId>
+telecrypt-io storage file download <treeId> <fileId> <destPath>
+telecrypt-io storage file rename <treeId> <fileId> <name>
+telecrypt-io storage file delete <treeId> <fileId>
 ```
 
-## Example: two participants sharing a folder
+## Example: two participants sharing a vault
 
 ```sh
 export A=~/.telecrypt-io/storage-alice
@@ -94,16 +97,16 @@ export B=~/.telecrypt-io/storage-bob
 TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
 TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
 
-FOLDER_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder create "Shared" --json | jq -r .id)
+VAULT_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault create "Shared" --json | jq -r .id)
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder share "$FOLDER_ID" @bob:telecrypt.io --role editor --json
-TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage folder join "$FOLDER_ID" --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage vault share "$VAULT_ID" @bob:telecrypt.io --role editor --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage vault join "$VAULT_ID" --json
 
-TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file upload "$FOLDER_ID" ./report.pdf --json
+TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file upload "$VAULT_ID" ./report.pdf --json
 # { "id": "$...", "name": "report.pdf", "mimetype": "application/pdf" }
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file list "$FOLDER_ID" --json
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file download "$FOLDER_ID" '$...' ./report-downloaded.pdf --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file list "$VAULT_ID" --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file download "$VAULT_ID" '$...' ./report-downloaded.pdf --json
 ```
 
 ## Example: recovery on a new device
@@ -116,5 +119,5 @@ TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage recovery setup --json
 export A2=~/.telecrypt-io/storage-alice-newlaptop
 TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
 printf '%s' "$RECOVERY_KEY" | TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage recovery restore --key-stdin --json
-TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage file download "$FOLDER_ID" '$...' ./recovered.pdf --json
+TELECRYPT_IO_STORAGE_HOME=$A2 telecrypt-io storage file download "$VAULT_ID" '$...' ./recovered.pdf --json
 ```
