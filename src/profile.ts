@@ -8,10 +8,9 @@ export interface Session {
   userId: string;
   deviceId: string;
   accessToken: string;
-  /** OIDC/MAS device-code grant fields. `oidcTokenEndpoint` is persisted so
-   * refresh never needs Node-hostile OIDC discovery after login. */
+  /** OIDC/MAS device-code grant fields. The token endpoint is persisted so
+   * refresh never needs discovery after login. */
   refreshToken: string;
-  oidcIssuer: string;
   oidcClientId: string;
   oidcTokenEndpoint: string;
 }
@@ -105,7 +104,6 @@ export function readSession(dir: string = profileDir()): Session | null {
     !isNonEmptyString(parsed.deviceId) ||
     !isNonEmptyString(parsed.accessToken) ||
     !isNonEmptyString(parsed.refreshToken) ||
-    !isNonEmptyString(parsed.oidcIssuer) ||
     !isNonEmptyString(parsed.oidcClientId) ||
     !isNonEmptyString(parsed.oidcTokenEndpoint)
   ) {
@@ -114,15 +112,21 @@ export function readSession(dir: string = profileDir()): Session | null {
   return parsed as Session;
 }
 
-export function writeSession(session: Session, dir: string = profileDir()): void {
-  ensureProfileDir(dir);
-  const destination = sessionPath(dir);
+/** Atomically replaces a private profile file without exposing partial state. */
+export function writePrivateFile(
+  destination: string,
+  contents: string | NodeJS.ArrayBufferView,
+): void {
+  ensureProfileDir(path.dirname(destination));
   assertSecureProfileFile(destination);
-  const temporary = path.join(dir, `.session-${process.pid}-${randomUUID()}.tmp`);
+  const temporary = path.join(
+    path.dirname(destination),
+    `.${path.basename(destination)}-${process.pid}-${randomUUID()}.tmp`,
+  );
   try {
     const fd = fs.openSync(temporary, "wx", 0o600);
     try {
-      fs.writeFileSync(fd, JSON.stringify(session, null, 2));
+      fs.writeFileSync(fd, contents);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
@@ -132,6 +136,10 @@ export function writeSession(session: Session, dir: string = profileDir()): void
     if (fs.existsSync(temporary)) fs.rmSync(temporary);
   }
   assertSecureProfileFile(destination);
+}
+
+export function writeSession(session: Session, dir: string = profileDir()): void {
+  writePrivateFile(sessionPath(dir), JSON.stringify(session, null, 2));
 }
 
 /** Clears all local state for this profile (session + crypto store). */

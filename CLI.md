@@ -2,9 +2,8 @@
 
 A terminal CLI over the `TeleCryptIOStorage` library: log in, set up recovery, create shared
 folders, invite participants, and upload/download end-to-end encrypted files — all driven
-entirely by the library (this CLI does not reimplement crypto or Matrix logic). All storage
-commands live under the `storage` namespace (`telecrypt-io storage ...`), leaving room for other
-TeleCrypt.io command groups to be added under the same `telecrypt-io` binary later.
+entirely by the library (this CLI does not reimplement crypto or Matrix logic). All commands live
+under the `storage` namespace (`telecrypt-io storage ...`).
 
 Crypto state is persisted in the selected profile so separate CLI processes can reopen the same
 encrypted session.
@@ -12,17 +11,14 @@ encrypted session.
 ## Setup
 
 ```sh
-npm install
-npm run build        # produces dist/index.js
+npm ci
 ```
 
 During development, run commands via `tsx` directly instead of building:
 
 ```sh
-npx tsx src/index.ts storage <command> [args] [--json]
+npm exec -- tsx src/index.ts storage <command> [args] [--json]
 ```
-
-Or, after `npm run build` / `npm link`, as the `telecrypt-io` binary.
 
 ## Profile / state
 
@@ -98,13 +94,13 @@ export B=~/.telecrypt-io/storage-bob
 TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
 TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage login --homeserver https://backend.telecrypt.io --json
 
-FOLDER_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder create "Shared" --json | jq -r .folderId)
+FOLDER_ID=$(TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder create "Shared" --json | jq -r .id)
 
-TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder share "$FOLDER_ID" @bob:localhost --role editor --json
+TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage folder share "$FOLDER_ID" @bob:telecrypt.io --role editor --json
 TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage folder join "$FOLDER_ID" --json
 
 TELECRYPT_IO_STORAGE_HOME=$B telecrypt-io storage file upload "$FOLDER_ID" ./report.pdf --json
-# { "fileId": "$...", "name": "report.pdf" }
+# { "id": "$...", "name": "report.pdf", "mimetype": "application/pdf" }
 
 TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file list "$FOLDER_ID" --json
 TELECRYPT_IO_STORAGE_HOME=$A telecrypt-io storage file download "$FOLDER_ID" '$...' ./report-downloaded.pdf --json

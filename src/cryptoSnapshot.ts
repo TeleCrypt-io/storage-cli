@@ -15,8 +15,8 @@
  *
  * Fix: snapshot fake-indexeddb's databases to disk after each command and
  * reload them before the next one runs, keyed to the profile directory. This
- * is Option 1 from the spec (disk-persistent crypto store) implemented via
- * generic export/import over the *public* IndexedDB API (databases(), cursors,
+ * provides a disk-persistent crypto store via generic export/import over the
+ * *public* IndexedDB API (databases(), cursors,
  * transactions) rather than poking fake-indexeddb's internals — so it isn't
  * coupled to fake-indexeddb's private representation and would keep working
  * against any spec-compliant IndexedDB implementation. Runtime crypto
@@ -29,10 +29,8 @@
  * (de)serialize rather than JSON.
  */
 import * as fs from "node:fs";
-import * as nodePath from "node:path";
 import * as v8 from "node:v8";
-import { randomUUID } from "node:crypto";
-import { assertSecureProfileFile, ensureProfileDir } from "./profile.js";
+import { assertSecureProfileFile, writePrivateFile } from "./profile.js";
 
 interface IndexSpec {
   name: string;
@@ -220,22 +218,7 @@ export function loadSnapshotFromDisk(path: string): CryptoSnapshot | null {
 }
 
 export function saveSnapshotToDisk(path: string, snapshot: CryptoSnapshot): void {
-  ensureProfileDir(nodePath.dirname(path));
-  assertSecureProfileFile(path);
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    const fd = fs.openSync(temporary, "wx", 0o600);
-    try {
-      fs.writeFileSync(fd, v8.serialize(snapshot));
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(temporary, path);
-  } finally {
-    if (fs.existsSync(temporary)) fs.rmSync(temporary);
-  }
-  assertSecureProfileFile(path);
+  writePrivateFile(path, v8.serialize(snapshot));
 }
 
 /** Loads the on-disk snapshot (if any) into the current process's fake-indexeddb. */

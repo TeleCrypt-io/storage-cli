@@ -3,8 +3,7 @@ import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/index.js";
 import { TeleCryptIOStorage } from "@telecrypt-io/storage";
 import { cryptoSnapshotPath, ensureProfileDir, profileDir, readSession, writeSession, Session } from "./profile.js";
 import { persistCryptoStore, restoreCryptoStore } from "./cryptoSnapshot.js";
-import { CliError } from "./errors.js";
-import { buildTokenRefreshFunction } from "@telecrypt-io/storage/core";
+import { buildTokenRefreshFunction, StorageError } from "@telecrypt-io/storage/core";
 
 export interface OpenedStorage {
   storage: TeleCryptIOStorage;
@@ -65,12 +64,12 @@ async function buildStorageForSession(session: Session, dir: string): Promise<Te
 /**
  * Opens a TeleCryptIOStorage bound to the current profile's session, having first
  * restored the crypto store snapshot (if any) from a previous CLI
- * invocation. Throws CliError("not logged in") if there is no session.
+ * invocation. Throws StorageError("not logged in") if there is no session.
  */
 export async function openStorage(dir: string = profileDir()): Promise<OpenedStorage> {
   const session = readSession(dir);
   if (!session) {
-    throw new CliError("not logged in — run `telecrypt-io storage login` first");
+    throw new StorageError("not logged in — run `telecrypt-io storage login` first");
   }
 
   const snapshotPath = cryptoSnapshotPath(dir);
@@ -128,7 +127,7 @@ export async function waitForBackupSettled(
     };
     client.on(CryptoEvent.KeyBackupSessionsRemaining, onRemaining);
     const timer = setTimeout(
-      () => finish(new CliError("key backup did not settle before timeout; retry the command")),
+      () => finish(new StorageError("key backup did not settle before timeout; retry the command")),
       timeoutMs,
     );
   });

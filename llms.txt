@@ -18,60 +18,62 @@ the NPM registry; `npm` is used only to install the immutable archive fetched fr
 
 ## CLI command tree
 
-All commands use the format `telecrypt-io --json storage <command>`. The `--json` flag is **global** and must come before the subcommand to enable machine-readable output (JSON on success, `{"error": "..."}` on failure with exit code 1).
+All commands use the format `telecrypt-io storage <command> [args] [--json]`. The `--json` flag may
+appear anywhere on the command line and enables machine-readable output (JSON on success,
+`{"error": "..."}` on failure with exit code 1).
 
 ### Session management
 
 **`login`** — Log in and persist the session to the local profile
-- `telecrypt-io --json storage login --homeserver https://backend.telecrypt.io` (OIDC/MAS device-code grant; opens browser for approval)
+- `telecrypt-io storage login --homeserver https://backend.telecrypt.io --json` (OIDC/MAS device-code grant; opens browser for approval)
 
 **`whoami`** — Print the current session identity
-- `telecrypt-io --json storage whoami`
+- `telecrypt-io storage whoami --json`
 
 **`logout`** — Clear the local profile and session
-- `telecrypt-io --json storage logout`
+- `telecrypt-io storage logout --json`
 
 ### Recovery (cross-signing & key backup)
 
 **`recovery setup`** — Set up server-side key backup and print the Recovery Key
-- `telecrypt-io --json storage recovery setup`
+- `telecrypt-io storage recovery setup --json`
 - Output includes `recoveryKey` (a long string); **save this** — it is the only way to recover your files on a new device
 
 **`recovery restore`** — Restore keys on a new device from a Recovery Key
-- `printf '%s' "$RECOVERY_KEY" | telecrypt-io --json storage recovery restore --key-stdin`
+- `printf '%s' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --key-stdin --json`
 
 ### Folders (shared storage spaces)
 
 **`folder create`** — Create a new shared folder
-- `telecrypt-io --json storage folder create "My Secure Folder"`
+- `telecrypt-io storage folder create "My Secure Folder" --json`
 
 **`folder list`** — List folders you have access to
-- `telecrypt-io --json storage folder list`
+- `telecrypt-io storage folder list --json`
 
 **`folder join`** — Accept a pending folder invitation
-- `telecrypt-io --json storage folder join '!roomid:homeserver.io'`
+- `telecrypt-io storage folder join '!roomid:homeserver.io' --json`
 
 **`folder share`** — Invite a user to a folder with a specific role
-- `telecrypt-io --json storage folder share '!roomid:homeserver.io' @alice:homeserver.io` (default: viewer role)
-- `telecrypt-io --json storage folder share '!roomid:homeserver.io' @alice:homeserver.io --role editor`
+- `telecrypt-io storage folder share '!roomid:homeserver.io' @alice:homeserver.io --json` (default: viewer role)
+- `telecrypt-io storage folder share '!roomid:homeserver.io' @alice:homeserver.io --role editor --json`
 
 **`folder members`** — List participants and their roles in a folder
-- `telecrypt-io --json storage folder members '!roomid:homeserver.io'`
+- `telecrypt-io storage folder members '!roomid:homeserver.io' --json`
 
 **`folder unshare`** — Remove a participant from a folder
-- `telecrypt-io --json storage folder unshare '!roomid:homeserver.io' @alice:homeserver.io`
+- `telecrypt-io storage folder unshare '!roomid:homeserver.io' @alice:homeserver.io --json`
 
 ### File operations
 
 **`file upload`** — Encrypt and upload a local file into a folder
-- `telecrypt-io --json storage file upload '!roomid:homeserver.io' /path/to/document.pdf`
-- `telecrypt-io --json storage file upload '!roomid:homeserver.io' /path/to/document.pdf --name "My Document"` (custom name)
+- `telecrypt-io storage file upload '!roomid:homeserver.io' /path/to/document.pdf --json`
+- `telecrypt-io storage file upload '!roomid:homeserver.io' /path/to/document.pdf --name "My Document" --json` (custom name)
 
 **`file list`** — List files in a folder
-- `telecrypt-io --json storage file list '!roomid:homeserver.io'`
+- `telecrypt-io storage file list '!roomid:homeserver.io' --json`
 
 **`file download`** — Download and decrypt a file to a local path
-- `telecrypt-io --json storage file download '!roomid:homeserver.io' FILE_ID /path/to/dest`
+- `telecrypt-io storage file download '!roomid:homeserver.io' FILE_ID /path/to/dest --json`
 
 ## Machine-readable output
 

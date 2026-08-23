@@ -5,8 +5,8 @@ import * as path from "node:path";
 import { Command } from "commander";
 import { clearProfile, readSession, writeSession } from "./profile.js";
 import { initStorageForNewSession, openStorage, waitForBackupSettled } from "./storage.js";
-import { CliError } from "./errors.js";
 import { runAction, CommandResult } from "./output.js";
+import { StorageError } from "@telecrypt-io/storage/core";
 import * as core from "@telecrypt-io/storage/core";
 import { runDeviceCodeLogin } from "./oidc.js";
 
@@ -60,7 +60,7 @@ function guessMimetype(filePath: string): string {
 
 function requireRecoveryKey(value: string): string {
   const recoveryKey = value.replace(/[\r\n]+$/, "");
-  if (!recoveryKey) throw new CliError("recovery key was empty");
+  if (!recoveryKey) throw new StorageError("recovery key was empty");
   return recoveryKey;
 }
 
@@ -69,7 +69,7 @@ function requireRecoveryKey(value: string): string {
  * prevents a recovery key being retained in shell history or process lists. */
 async function readRecoveryKeyFromStdin(): Promise<string> {
   if (process.stdin.isTTY) {
-    throw new CliError("--key-stdin requires a piped recovery key; omit it for the hidden prompt");
+    throw new StorageError("--key-stdin requires a piped recovery key; omit it for the hidden prompt");
   }
 
   const chunks: Buffer[] = [];
@@ -77,7 +77,7 @@ async function readRecoveryKeyFromStdin(): Promise<string> {
   for await (const chunk of process.stdin) {
     const data = Buffer.from(chunk);
     length += data.length;
-    if (length > MAX_RECOVERY_KEY_BYTES) throw new CliError("recovery key input is unexpectedly large");
+    if (length > MAX_RECOVERY_KEY_BYTES) throw new StorageError("recovery key input is unexpectedly large");
     chunks.push(data);
   }
   return requireRecoveryKey(Buffer.concat(chunks).toString("utf8"));
@@ -86,7 +86,7 @@ async function readRecoveryKeyFromStdin(): Promise<string> {
 /** Prompts on a TTY without echoing the recovery key. */
 async function promptForRecoveryKey(): Promise<string> {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
-    throw new CliError("recovery key requires a TTY prompt or explicit --key-stdin input");
+    throw new StorageError("recovery key requires a TTY prompt or explicit --key-stdin input");
   }
 
   return new Promise((resolve, reject) => {
@@ -127,7 +127,7 @@ async function promptForRecoveryKey(): Promise<string> {
           return;
         }
         if (char === "\u0003") {
-          finish(new CliError("recovery key input interrupted"));
+          finish(new StorageError("recovery key input interrupted"));
           return;
         }
         if (char === "\b" || char === "\u007f") {
@@ -137,7 +137,7 @@ async function promptForRecoveryKey(): Promise<string> {
         }
         byteLength += Buffer.byteLength(char, "utf8");
         if (byteLength > MAX_RECOVERY_KEY_BYTES) {
-          finish(new CliError("recovery key input is unexpectedly large"));
+          finish(new StorageError("recovery key input is unexpectedly large"));
           return;
         }
         chars.push(char);
@@ -219,7 +219,7 @@ storage
   .action(async (_opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       const session = readSession();
-      if (!session) throw new CliError("not logged in");
+      if (!session) throw new StorageError("not logged in");
       return {
         json: { userId: session.userId, deviceId: session.deviceId, homeserver: session.homeserver },
         text: `${session.userId} (device ${session.deviceId}) @ ${session.homeserver}`,
@@ -312,7 +312,7 @@ folder
       try {
         const result = await core.createFolder(opened.storage, name);
         return {
-          json: { folderId: result.id, name: result.name },
+          json: { ...result },
           text: `Created folder "${result.name}" (${result.id})`,
         };
       } finally {
@@ -406,12 +406,10 @@ folder
   .option("--role <role>", "viewer or editor", "viewer")
   .action(async (folderId: string, userId: string, opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
-      // Validated here too (before openStorage/login is even attempted) so
-      // a bad --role fails fast exactly as before; core.shareFolder repeats
-      // the same check so it's still safe to call standalone (e.g. from a
-      // future UI) without this CLI-side pre-check.
+      // Validate before opening storage so a bad --role fails fast. The core
+      // operation repeats the check for callers outside this CLI.
       if (opts.role !== "viewer" && opts.role !== "editor") {
-        throw new CliError(`invalid --role "${opts.role}" (must be viewer or editor)`);
+        throw new StorageError(`invalid --role "${opts.role}" (must be viewer or editor)`);
       }
       const opened = await openStorage();
       try {
@@ -502,7 +500,7 @@ file
   .action(async (folderId: string, filePath: string, opts, command: Command) => {
     await runAction(command, async (): Promise<CommandResult> => {
       if (!fs.existsSync(filePath)) {
-        throw new CliError(`file not found: ${filePath}`);
+        throw new StorageError(`file not found: ${filePath}`);
       }
       const opened = await openStorage();
       try {
@@ -520,7 +518,7 @@ file
         // before this short-lived process exits.
         await waitForBackupSettled(opened.storage);
         return {
-          json: { fileId: result.id, name: result.name },
+          json: { ...result },
           text: `Uploaded "${result.name}" as ${result.id}`,
         };
       } finally {

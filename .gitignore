@@ -5,6 +5,3 @@ release/
 
 # Playwright output (traces/videos on failed prod-smoke runs)
 test-results/
-
-# Disposable test Synapse state — never commit (contains generated signing keys)
-throwaway_synapse/data/
