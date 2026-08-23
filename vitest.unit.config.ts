@@ -8,6 +8,7 @@ export default defineConfig({
       "test/storage.test.ts",
       "test/oidcApproval.test.ts",
       "test/cryptoSnapshot.test.ts",
+      "test/oidcValidation.test.ts",
     ],
   },
 });

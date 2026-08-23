@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/index.js";
-import { waitForBackupSettled, withRefreshedTokens } from "../src/storage.js";
+import { initStorageForNewSession, waitForBackupSettled, withRefreshedTokens } from "../src/storage.js";
 import type { Session } from "../src/profile.js";
 
 const SESSION: Session = {
@@ -27,6 +30,24 @@ describe("OIDC session refresh persistence", () => {
       accessToken: "access-later",
       refreshToken: "refresh-rotated",
     });
+  });
+
+  it("rejects a tampered cross-origin refresh endpoint before opening storage", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-oidc-endpoint-test-"));
+    try {
+      await expect(
+        initStorageForNewSession(
+          {
+            ...SESSION,
+            homeserver: "https://backend.telecrypt.io",
+            oidcTokenEndpoint: "https://evil.example/token",
+          },
+          dir,
+        ),
+      ).rejects.toThrow(/OIDC token endpoint.*configured OIDC origin/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

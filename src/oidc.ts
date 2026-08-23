@@ -16,8 +16,81 @@ import {
   whoAmI,
   StorageError,
 } from "@telecrypt-io/storage/core";
+import type { OidcClientConfig } from "@telecrypt-io/storage/core";
 import type { Session } from "./profile.js";
 import { withOidcWindowShim } from "./oidcWindowPolyfill.js";
+
+function parseOidcUrl(value: unknown, name: string, allowQuery = false, canonical = true): URL {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new StorageError(`${name} must be a non-empty URL`);
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new StorageError(`${name} must be a valid URL`);
+  }
+
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    (!allowQuery && parsed.search !== "") ||
+    parsed.hash !== "" ||
+    (canonical &&
+      parsed.toString() !== value &&
+      !(parsed.pathname === "/" && parsed.toString() === `${value}/`))
+  ) {
+    throw new StorageError(`${name} must be a canonical HTTP(S) URL without credentials, queries, or fragments`);
+  }
+  return parsed;
+}
+
+function isWithinIssuerPath(issuer: URL, endpoint: URL): boolean {
+  if (issuer.pathname === "/") return true;
+  const prefix = issuer.pathname.endsWith("/") ? issuer.pathname : `${issuer.pathname}/`;
+  return endpoint.pathname === issuer.pathname || endpoint.pathname.startsWith(prefix);
+}
+
+/** Validates an OIDC endpoint before registration, authorization, or refresh tokens are sent. */
+export function assertOidcEndpoint(
+  value: unknown,
+  trustedHomeserver: string,
+  name: string,
+  issuer?: URL,
+  allowQuery = false,
+): string {
+  const homeserver = parseOidcUrl(trustedHomeserver, "homeserver", false, false);
+  const endpoint = parseOidcUrl(value, name, allowQuery);
+  if (endpoint.origin !== homeserver.origin || (issuer && !isWithinIssuerPath(issuer, endpoint))) {
+    throw new StorageError(`${name} must remain on the configured OIDC origin and issuer path`);
+  }
+  return endpoint.toString();
+}
+
+/** Validates every OIDC URL the CLI will use before dynamic registration. */
+export function validateOidcMetadata(metadata: OidcClientConfig, homeserver: string): OidcClientConfig {
+  const trustedHomeserver = parseOidcUrl(homeserver, "homeserver", false, false);
+  const issuer = parseOidcUrl(metadata.issuer, "OIDC issuer");
+  if (issuer.origin !== trustedHomeserver.origin) {
+    throw new StorageError("OIDC issuer must remain on the configured homeserver origin");
+  }
+
+  const endpoints: Array<[string, unknown]> = [
+    ["OIDC authorization endpoint", metadata.authorization_endpoint],
+    ["OIDC device authorization endpoint", metadata.device_authorization_endpoint],
+    ["OIDC registration endpoint", metadata.registration_endpoint],
+    ["OIDC token endpoint", metadata.token_endpoint],
+  ];
+  for (const [name, endpoint] of endpoints) {
+    assertOidcEndpoint(endpoint, homeserver, name, issuer);
+  }
+  if (metadata.jwks_uri !== undefined) {
+    assertOidcEndpoint(metadata.jwks_uri, homeserver, "OIDC JWKS endpoint", issuer);
+  }
+  return metadata;
+}
 
 /** Generates a device ID the same shape matrix-js-sdk itself would (short
  * uppercase alphanumeric) — this CLI process chooses it upfront (unlike the
@@ -69,12 +142,8 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
   // needs a `window` stub under Node, and the only place in the CLI it's
   // safe to install one — nothing crypto/WASM-related exists yet in this
   // process.
-  const authMetadata = await withOidcWindowShim(() => discoverOidcIssuer(homeserver));
-  if (!authMetadata.device_authorization_endpoint) {
-    throw new StorageError(
-      `${homeserver} does not advertise required OIDC device-code support (no device_authorization_endpoint).`,
-    );
-  }
+  const discoveredMetadata = await withOidcWindowShim(() => discoverOidcIssuer(homeserver));
+  const authMetadata = validateOidcMetadata(discoveredMetadata, homeserver);
 
   const clientId = await registerClient(authMetadata, {
     clientName: "TeleCrypt.io CLI",
@@ -91,14 +160,31 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
 
   const deviceId = generateDeviceId();
   const session = await startDeviceCodeLogin(authMetadata, clientId, deviceId);
+  const issuer = parseOidcUrl(authMetadata.issuer, "OIDC issuer");
+  const verificationUri = assertOidcEndpoint(
+    session.verification_uri,
+    homeserver,
+    "OIDC verification URI",
+    issuer,
+    true,
+  );
+  const verificationUriComplete = session.verification_uri_complete
+    ? assertOidcEndpoint(
+        session.verification_uri_complete,
+        homeserver,
+        "OIDC complete verification URI",
+        issuer,
+        true,
+      )
+    : undefined;
 
   hooks.onVerification({
-    verificationUri: session.verification_uri,
-    verificationUriComplete: session.verification_uri_complete,
+    verificationUri,
+    verificationUriComplete,
     userCode: session.user_code,
   });
   if (!process.env.TELECRYPT_IO_STORAGE_NO_BROWSER) {
-    tryOpenBrowser(session.verification_uri_complete ?? session.verification_uri);
+    tryOpenBrowser(verificationUriComplete ?? verificationUri);
   }
 
   const result = await waitForDeviceCodeLogin(authMetadata, clientId, session);
