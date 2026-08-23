@@ -16,6 +16,12 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    env:
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: init.defaultBranch
+      GIT_CONFIG_VALUE_0: main
+      GIT_CONFIG_KEY_1: advice.detachedHead
+      GIT_CONFIG_VALUE_1: "false"
     steps:
       - name: Checkout exact release tag
         uses: actions/checkout@v7.0.1
@@ -64,7 +70,7 @@ jobs:
           fi
 
       - name: Install exact dependencies
-        run: npm ci
+        run: npm ci --no-fund
 
       - name: Verify and build
         run: |
@@ -84,7 +90,7 @@ jobs:
       - name: Verify offline global installation
         run: |
           install_prefix="$RUNNER_TEMP/storage-cli-install"
-          npm install --global --prefix "$install_prefix" --offline --ignore-scripts "${GITHUB_WORKSPACE}/release/${GITHUB_REF_NAME}.tgz"
+          npm install --global --prefix "$install_prefix" --offline --ignore-scripts --no-fund "${GITHUB_WORKSPACE}/release/${GITHUB_REF_NAME}.tgz"
           "$install_prefix/bin/telecrypt-io" --help
 
       - name: Attest release archive
