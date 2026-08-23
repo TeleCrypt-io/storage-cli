@@ -10,7 +10,6 @@ const SESSION: Session = {
   deviceId: "DEVICE",
   accessToken: "access-original",
   refreshToken: "refresh-original",
-  oidcIssuer: "https://auth.example.test",
   oidcClientId: "client",
   oidcTokenEndpoint: "https://auth.example.test/token",
 };

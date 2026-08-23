@@ -9,9 +9,7 @@ import { waitFor } from "../harness/waitFor";
 const HOMESERVER = "http://localhost:8008";
 
 function randomUser(prefix: string): string {
-  // MAS enforces the Matrix user ID grammar strictly (lowercase localpart) —
-  // lowercase defensively since some prefixes here are historically
-  // mixed-case (e.g. "multiA").
+  // MAS enforces lowercase Matrix localparts.
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}`.toLowerCase();
 }
 
@@ -66,7 +64,7 @@ async function loginProfileOnce(
 
 /** `mas-cli manage register-user` returns before its asynchronous Matrix
  * provisioning job always settles. Retrying the full OIDC flow observes that
- * real boundary without falling back to compatibility password login. */
+ * real boundary without bypassing the OIDC flow through a direct password API. */
 async function loginProfile(
   dir: string,
   user: LocalMasUser,
@@ -110,7 +108,7 @@ describe("CLI", () => {
 
       const folderRes = await cliJson(["storage", "folder", "create", "PersistFolder"], env);
       expect(folderRes.code).toBe(0);
-      const folderId = folderRes.json.folderId as string;
+      const folderId = folderRes.json.id as string;
       expect(folderId).toBeTruthy();
 
       const srcPath = path.join(dir, "source.txt");
@@ -119,7 +117,7 @@ describe("CLI", () => {
 
       const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], env);
       expect(uploadRes.code).toBe(0);
-      const fileId = uploadRes.json.fileId as string;
+      const fileId = uploadRes.json.id as string;
       expect(fileId).toBeTruthy();
 
       // A completely fresh process, no state shared except the profile dir on
@@ -154,7 +152,7 @@ describe("CLI", () => {
 
       const folderRes = await cliJson(["storage", "folder", "create", "Shared"], envA);
       expect(folderRes.code).toBe(0);
-      const folderId = folderRes.json.folderId as string;
+      const folderId = folderRes.json.id as string;
 
       const shareRes = await cliJson(
         ["storage", "folder", "share", folderId, userB.userId, "--role", "editor"],
@@ -172,7 +170,7 @@ describe("CLI", () => {
 
       const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], envB);
       expect(uploadRes.code).toBe(0);
-      const fileId = uploadRes.json.fileId as string;
+      const fileId = uploadRes.json.id as string;
 
       // A downloads B's file. The megolm key-share to-device message is
       // awaited as part of B's upload resolving, so this should generally
@@ -212,7 +210,7 @@ describe("CLI", () => {
       const userB = await registerProfile(dirB, "membersB");
 
       const folderRes = await cliJson(["storage", "folder", "create", "Roles"], envA);
-      const folderId = folderRes.json.folderId as string;
+      const folderId = folderRes.json.id as string;
 
       await cliJson(["storage", "folder", "share", folderId, userB.userId, "--role", "viewer"], envA);
       await cliJson(["storage", "folder", "join", folderId], envB);
@@ -263,13 +261,13 @@ describe("CLI", () => {
       const user = await registerProfile(dir1, "recover");
 
       const folderRes = await cliJson(["storage", "folder", "create", "RecoverMe"], env1);
-      const folderId = folderRes.json.folderId as string;
+      const folderId = folderRes.json.id as string;
 
       const srcPath = path.join(dir1, "important.txt");
       const originalBytes = `recoverable content ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
       const uploadRes = await cliJson(["storage", "file", "upload", folderId, srcPath], env1);
-      const fileId = uploadRes.json.fileId as string;
+      const fileId = uploadRes.json.id as string;
 
       const setupRes = await cliJson(["storage", "recovery", "setup"], env1);
       expect(setupRes.code).toBe(0);
@@ -356,7 +354,7 @@ describe("CLI", () => {
 
       const parent = await cliJson(["storage", "folder", "create", "Parent"], env);
       expect(parent.code).toBe(0);
-      const parentId = parent.json.folderId as string;
+      const parentId = parent.json.id as string;
 
       const child = await cliJson(
         ["storage", "folder", "subfolder", "create", parentId, "Child"],
@@ -385,7 +383,7 @@ describe("CLI", () => {
       fs.writeFileSync(source, `tree operation proof ${Math.random()}`);
       const upload = await cliJson(["storage", "file", "upload", parentId, source], env);
       expect(upload.code).toBe(0);
-      const fileId = upload.json.fileId as string;
+      const fileId = upload.json.id as string;
 
       const renameFile = await cliJson(
         ["storage", "file", "rename", parentId, fileId, "after-rename.txt"],
@@ -461,7 +459,7 @@ describe("CLI", () => {
         const env = { TELECRYPT_IO_STORAGE_HOME: dir };
 
         const folderRes = await cliJson(["storage", "folder", "create", "Empty"], env);
-        const folderId = folderRes.json.folderId as string;
+        const folderId = folderRes.json.id as string;
 
         const res = await cliJson(
           ["storage", "file", "download", folderId, "$doesnotexist12345", path.join(dir, "out.txt")],

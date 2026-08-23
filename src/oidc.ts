@@ -14,8 +14,8 @@ import {
   waitForDeviceCodeLogin,
   isDeviceAccessTokenError,
   whoAmI,
+  StorageError,
 } from "@telecrypt-io/storage/core";
-import { CliError } from "./errors.js";
 import type { Session } from "./profile.js";
 import { withOidcWindowShim } from "./oidcWindowPolyfill.js";
 
@@ -61,18 +61,17 @@ export interface DeviceCodeLoginHooks {
  * Runs the full device-code login flow against `homeserver`: discovery, DCR,
  * start device authorization, print verification info + try to open the
  * browser, poll until approved, confirm identity via `/whoami`. Returns a
- * `Session` ready to `writeSession()` — includes the OIDC token set fields
- * (`refreshToken`, `oidcIssuer`, `oidcClientId`, `oidcIdToken`) so later CLI
- * invocations can reuse + refresh it.
+ * `Session` ready to `writeSession()` with the token endpoint needed for
+ * later refreshes.
  */
 export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLoginHooks): Promise<Session> {
-// See src/oidcWindowPolyfill.ts: discovery is the one OIDC call that
+  // See src/oidcWindowPolyfill.ts: discovery is the one OIDC call that
   // needs a `window` stub under Node, and the only place in the CLI it's
   // safe to install one — nothing crypto/WASM-related exists yet in this
   // process.
   const authMetadata = await withOidcWindowShim(() => discoverOidcIssuer(homeserver));
   if (!authMetadata.device_authorization_endpoint) {
-    throw new CliError(
+    throw new StorageError(
       `${homeserver} does not advertise required OIDC device-code support (no device_authorization_endpoint).`,
     );
   }
@@ -104,15 +103,15 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
 
   const result = await waitForDeviceCodeLogin(authMetadata, clientId, session);
   if (isDeviceAccessTokenError(result)) {
-    throw new CliError(`device login was not approved: ${result.error_description ?? result.error}`);
+    throw new StorageError(`device login was not approved: ${result.error_description ?? result.error}`);
   }
   if (!result.refresh_token) {
-    throw new CliError("device login returned no refresh token");
+    throw new StorageError("device login returned no refresh token");
   }
 
   const who = await whoAmI(homeserver, result.access_token);
   if (who.deviceId && who.deviceId !== deviceId) {
-    throw new CliError(
+    throw new StorageError(
       `device_id mismatch after OIDC login: requested ${deviceId}, server confirmed ${who.deviceId}`,
     );
   }
@@ -123,7 +122,6 @@ export async function runDeviceCodeLogin(homeserver: string, hooks: DeviceCodeLo
     deviceId,
     accessToken: result.access_token,
     refreshToken: result.refresh_token,
-    oidcIssuer: authMetadata.issuer,
     oidcClientId: clientId,
     oidcTokenEndpoint: authMetadata.token_endpoint,
   };

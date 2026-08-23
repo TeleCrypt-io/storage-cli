@@ -27,7 +27,6 @@ function session() {
     deviceId: "DEVICE",
     accessToken: "access-token",
     refreshToken: "refresh-token",
-    oidcIssuer: "https://auth.example.test",
     oidcClientId: "client",
     oidcTokenEndpoint: "https://auth.example.test/token",
   };

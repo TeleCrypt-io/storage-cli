@@ -8,7 +8,7 @@ export async function setup(): Promise<void> {
       [
         "Synapse not reachable at http://localhost:8008",
         "",
-        "  Run 'npm run synapse:up' first.",
+        "  Start the shared fixture from the Storage SDK repository first.",
         "",
       ].join("\n"),
     );

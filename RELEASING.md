@@ -30,7 +30,7 @@ installer therefore does not need to resolve packages from the NPM registry. Nod
    git push origin storage-cli-vX.Y.Z
    ```
 
-4. GitHub Actions checks that the tag and manifest agree, runs `npm ci`, lint, and build once,
+4. GitHub Actions checks that the tag and manifest agree, runs `npm ci`, lint, unit tests, and build once,
    packages the compiled output with bundled dependencies, and performs an **offline** global
    installation check of that archive.
 5. Only after all checks pass, the workflow creates the GitHub Release and attaches the archive

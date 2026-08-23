@@ -1,6 +1,7 @@
 {
   "name": "@telecrypt-io/storage-cli",
-  "version": "0.1.5",
+  "version": "0.2.0",
+  "private": true,
   "license": "BUSL-1.1",
   "type": "module",
   "main": "dist/index.js",
@@ -26,15 +27,12 @@
     "lint": "eslint src test --ext .ts",
     "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
-    "test:watch": "vitest",
-    "synapse:up": "./throwaway_synapse/up.sh",
-    "synapse:fresh": "./throwaway_synapse/up.sh --fresh",
-    "synapse:down": "./throwaway_synapse/down.sh"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "commander": "15.0.0",
     "fake-indexeddb": "6.2.5",
-    "@telecrypt-io/storage": "0.2.1",
+    "@telecrypt-io/storage": "0.3.0",
     "matrix-js-sdk": "41.9.0"
   },
   "devDependencies": {

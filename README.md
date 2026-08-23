@@ -8,8 +8,7 @@ upload, download, rename, and deletion. Its real-stack Harness scenarios exercis
 operations as the web UI; they are operator-local acceptance tests, never hosted CI.
 
 **Distribution:** the standalone CLI is available only as an exact
-[GitHub Release](https://github.com/TeleCrypt-io/storage-cli/releases), never from the NPM
-registry. The existing combined `@telecrypt-io/storage@0.1.3` package remains unchanged.
+[GitHub Release](https://github.com/TeleCrypt-io/storage-cli/releases), never from the NPM registry.
 
 ## Install
 
@@ -32,19 +31,18 @@ telecrypt-io storage folder share <folderId> @bob:your.server --role editor
 telecrypt-io storage recovery setup     # prints your Recovery Key — save it
 ```
 
-The CLI supports MAS/OIDC device authorization only; it never sends a Matrix
-password compatibility-login request.
+The CLI supports MAS/OIDC device authorization only; it never sends a Matrix login password.
 
 ## Development
 
 ```bash
-npm install
-npm run synapse:up     # disposable local Synapse for tests
+npm ci
+# Start the shared disposable fixture from a Storage SDK checkout first.
 npm test
-npm run synapse:down
 ```
 
-Tests run against a real local Synapse in podman, never against a production server.
+The Storage SDK repository owns the local Synapse/MAS fixture. These tests connect to it at
+`http://localhost:8008`; they never target a production server or duplicate the stack definition.
 
 See [CLI.md](./CLI.md) for the full command reference and [RELEASING.md](./RELEASING.md) for the
 guarded GitHub Release procedure.
