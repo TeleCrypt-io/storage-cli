@@ -5,114 +5,547 @@ on:
     tags: ["storage-cli-v*"]
 
 permissions:
-  contents: write
-  attestations: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: storage-cli-release-${{ github.ref_name }}
   cancel-in-progress: false
 
+env:
+  GIT_CONFIG_NOSYSTEM: "1"
+  GIT_CONFIG_GLOBAL: /dev/null
+  GIT_CONFIG_SYSTEM: /dev/null
+  GIT_CONFIG_COUNT: "0"
+  GIT_CONFIG_PARAMETERS: ""
+  GIT_TERMINAL_PROMPT: "0"
+  GIT_ASKPASS: /bin/false
+  SSH_ASKPASS: /bin/false
+  GIT_SSH: ""
+  GIT_SSH_COMMAND: ""
+  GIT_SSH_VARIANT: ""
+  GIT_PROXY_COMMAND: ""
+  GIT_SSL_NO_VERIFY: ""
+  GIT_HTTP_EXTRAHEADER: ""
+  GIT_CURL_VERBOSE: ""
+  GIT_TRACE: ""
+  GIT_TRACE_PACKET: ""
+  GIT_TRACE_CURL: ""
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  ALL_PROXY: ""
+  GH_HOST: github.com
+  SDK_REF: v0.5.0
+
 jobs:
-  release:
+  build:
     runs-on: ubuntu-24.04
-    env:
-      GIT_CONFIG_COUNT: "2"
-      GIT_CONFIG_KEY_0: init.defaultBranch
-      GIT_CONFIG_VALUE_0: main
-      GIT_CONFIG_KEY_1: advice.detachedHead
-      GIT_CONFIG_VALUE_1: "false"
+    timeout-minutes: 35
+    permissions:
+      contents: read
     steps:
-      - name: Checkout exact release tag
+      - name: Checkout the exact release tag
         uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Require an exact numeric release tag
+      - name: Setup Node 22
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: "22.23.2"
+          cache: npm
+
+      - name: Test release policy helpers offline
+        run: |
+          node --test test/releasePolicy.test.mjs
+          bash test/releaseTransport.test.sh
+
+      - name: Verify the immutable source identity
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$GITHUB_REF_NAME" =~ ^storage-cli-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "release tag must match storage-cli-v<major>.<minor>.<patch> without leading zeroes: $GITHUB_REF_NAME" >&2
-            exit 1
-          fi
+          bash scripts/hardenReleaseTransport.sh . https://github.com/TeleCrypt-io/storage-cli.git
+          node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          test "$(npm --version)" = "10.9.8"
+          timeout 120s git fetch --quiet --force --no-tags origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          test "$(git cat-file -t "$tag_ref")" = tag
+          tag_object="$(git rev-parse "$tag_ref")"
+          tag_commit="$(git rev-parse "$tag_ref^{commit}")"
+          test "$tag_commit" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_tag="$(timeout 30s git ls-remote --refs origin "$tag_ref")"
+          test "$(wc -l <<<"$remote_tag")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_tag")" = "$tag_object"
+          remote_commit_ref="${tag_ref}^{}"
+          remote_commit="$(timeout 30s git ls-remote origin "$remote_commit_ref")"
+          test "$(wc -l <<<"$remote_commit")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_commit")" = "$GITHUB_SHA"
+          remote_main_line="$(timeout 30s git ls-remote --heads origin refs/heads/main)"
+          test "$(wc -l <<<"$remote_main_line")" = 1
+          remote_main="$(awk '{ print $1 }' <<<"$remote_main_line")"
+          test "$remote_main" = "$GITHUB_SHA"
+          mkdir -p release
+          cat > release/source-identity.txt <<EOF
+          tag_ref=$tag_ref
+          tag_object=$tag_object
+          tag_commit=$tag_commit
+          remote_main=$remote_main
+          EOF
 
-      - name: Require an annotated immutable release tag
-        run: |
-          test "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" = tag
+      - name: Require the exact SDK release
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: TeleCrypt-io/storage-sdk
+          ref: ${{ env.SDK_REF }}
+          path: storage-sdk
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Require release commit to be contained in refreshed main
+      - name: Bind the exact SDK release source
+        shell: bash
         run: |
           set -euo pipefail
-          git fetch --force --no-tags origin refs/heads/main:refs/remotes/origin/main
-          release_commit="$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")"
-          test "$(git rev-parse HEAD)" = "$release_commit"
-          git merge-base --is-ancestor "$release_commit" refs/remotes/origin/main
+          : "${SDK_REF:?SDK_REF is required}"
+          bash scripts/hardenReleaseTransport.sh storage-sdk https://github.com/TeleCrypt-io/storage-sdk.git
+          sdk_ref="refs/tags/$SDK_REF"
+          test "$(git -C storage-sdk cat-file -t "$sdk_ref")" = tag
+          sdk_tag_object="$(git -C storage-sdk rev-parse "$sdk_ref")"
+          sdk_tag_commit="$(git -C storage-sdk rev-parse "$sdk_ref^{commit}")"
+          test "$(git -C storage-sdk rev-parse HEAD)" = "$sdk_tag_commit"
+          remote_sdk_tag="$(timeout 30s git -C storage-sdk ls-remote --refs origin "$sdk_ref")"
+          test "$(wc -l <<<"$remote_sdk_tag")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_sdk_tag")" = "$sdk_tag_object"
+          remote_sdk_commit="$(timeout 30s git -C storage-sdk ls-remote origin "$sdk_ref^{}")"
+          test "$(wc -l <<<"$remote_sdk_commit")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_sdk_commit")" = "$sdk_tag_commit"
+          sdk_version="$(node -p 'require("./storage-sdk/package.json").version')"
+          test "$sdk_version" = "${SDK_REF#v}"
+          printf 'tag_ref=%s\ntag_object=%s\ntag_commit=%s\nversion=%s\n' \
+            "$sdk_ref" "$sdk_tag_object" "$sdk_tag_commit" "$sdk_version" > release/sdk-source-identity.txt
+
+      - name: Verify exact SDK registry bytes against the annotated tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_version="${SDK_REF#v}"
+          # Keep the current release deliberately blocked while the manifest
+          # still selects the available SDK. Once the exact SDK 0.5 artifact
+          # is published, this downloads the registry bytes selected by the
+          # lockfile and binds their npm gitHead to the checked tag commit.
+          selected_version="$(node -p 'require("./package.json").dependencies["@telecrypt-io/storage"]')"
+          if test "$selected_version" != "$sdk_version"; then
+            echo "SDK registry-byte verification deferred: manifest does not yet select $sdk_version" >&2
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/storage-sdk-package"
+          timeout 120s npm pack --ignore-scripts --no-package-lock \
+            --pack-destination "$RUNNER_TEMP/storage-sdk-package" \
+            "@telecrypt-io/storage@$sdk_version" > "$RUNNER_TEMP/storage-sdk-pack.txt"
+          sdk_archive="$(find "$RUNNER_TEMP/storage-sdk-package" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$sdk_archive"
+          sdk_tag_commit="$(awk -F= '$1 == "tag_commit" { print $2 }' release/sdk-source-identity.txt)"
+          node scripts/verifySdkPackage.mjs "$sdk_archive" package-lock.json "$sdk_tag_commit" "$sdk_version"
+
+      - name: Require exact package and lockfile versions
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const expected = {
+            "@telecrypt-io/storage": "0.5.0",
+            "matrix-js-sdk": "42.2.0",
+          };
+          const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          const root = lock.packages?.[""];
+          if (packageJson.version !== process.env.GITHUB_REF_NAME.slice("storage-cli-v".length)) {
+            throw new Error("package.json version does not match the release tag");
+          }
+          if (root?.name !== packageJson.name || root?.version !== packageJson.version) {
+            throw new Error("package-lock.json root does not match package.json");
+          }
+          for (const [name, version] of Object.entries(expected)) {
+            const entry = lock.packages?.[`node_modules/${name}`];
+            const tarball = name.startsWith("@") ? name.slice(name.indexOf("/") + 1) : name;
+            const resolved = `https://registry.npmjs.org/${name}/-/${tarball}-${version}.tgz`;
+            if (
+              packageJson.dependencies?.[name] !== version ||
+              root.dependencies?.[name] !== version ||
+              entry?.version !== version ||
+              entry.resolved !== resolved ||
+              !/^sha512-[A-Za-z0-9+/]{86}==$/.test(entry.integrity ?? "")
+            ) throw new Error(`${name} is not the exact locked ${version} registry artifact`);
+          }
+          NODE
+
+      - name: Install and test exact dependencies
+        run: |
+          set -euo pipefail
+          timeout 300s npm ci --ignore-scripts --no-fund --no-audit
+          timeout 180s npm run lint
+          timeout 300s npm run test:unit
+          timeout 180s npm run build
+
+      - name: Package and validate the tested archive
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          : > THIRD-PARTY-LICENSES.txt
+          trap 'rm -f -- THIRD-PARTY-LICENSES.txt' EXIT
+          timeout 120s npm pack --ignore-scripts --dry-run --json > release/pack.json
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const metadata = JSON.parse(fs.readFileSync("release/pack.json", "utf8"));
+          if (!Array.isArray(metadata) || metadata.length !== 1 || !Array.isArray(metadata[0]?.files)) {
+            throw new Error("npm pack did not return one file manifest");
+          }
+          const paths = metadata[0].files.map((entry) => {
+            if (!entry || typeof entry.path !== "string" || entry.path === "" || entry.path.startsWith("/") || entry.path.includes("\\")) {
+              throw new Error("npm pack returned an invalid archive path");
+            }
+            return `package/${entry.path}`;
+          });
+          fs.writeFileSync("release/archive-contents.txt", `${paths.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+          NODE
+          node scripts/validateReleaseArchive.mjs release/archive-contents.txt package-lock.json release/THIRD-PARTY-LICENSES.txt
+          test -s release/THIRD-PARTY-LICENSES.txt
+          cp -- release/THIRD-PARTY-LICENSES.txt THIRD-PARTY-LICENSES.txt
+          timeout 120s npm pack --ignore-scripts --pack-destination release > release/npm-pack-output.txt
+          packed_archive="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$packed_archive"
+          mv -- "$packed_archive" "release/${GITHUB_REF_NAME}.tgz"
+          test "$(stat -c%s "release/${GITHUB_REF_NAME}.tgz")" -le 268435456
+          # Stop tar as soon as the bounded listing sink fills; redirecting
+          # tar directly to a file would permit an unbounded listing.
+          timeout 30s tar -tzf "release/${GITHUB_REF_NAME}.tgz" |
+            head -c 67108864 > release/archive-contents-final.txt
+          node scripts/validateReleaseArchive.mjs release/archive-contents-final.txt package-lock.json release/THIRD-PARTY-LICENSES-final.txt "release/${GITHUB_REF_NAME}.tgz"
+          cmp -- release/THIRD-PARTY-LICENSES.txt release/THIRD-PARTY-LICENSES-final.txt
+          timeout 30s tar -xOzf "release/${GITHUB_REF_NAME}.tgz" package/THIRD-PARTY-LICENSES.txt > release/THIRD-PARTY-LICENSES-archive.txt
+          cmp -- release/THIRD-PARTY-LICENSES.txt release/THIRD-PARTY-LICENSES-archive.txt
+          archive_sha256="$(sha256sum "release/${GITHUB_REF_NAME}.tgz" | awk '{ print $1 }')"
+          printf 'archive_sha256=%s\n' "$archive_sha256" >> release/source-identity.txt
+
+      - name: Verify tested archive binding
+        run: |
+          set -euo pipefail
+          archive_sha256="$(awk -F= '$1 == "archive_sha256" { print $2 }' release/source-identity.txt)"
+          test "$(sha256sum "release/${GITHUB_REF_NAME}.tgz" | awk '{ print $1 }')" = "$archive_sha256"
+          test "$(stat -c%s "release/${GITHUB_REF_NAME}.tgz")" -le 268435456
+
+      - name: Upload the tested archive
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: storage-cli-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: |
+            release/${{ github.ref_name }}.tgz
+            release/source-identity.txt
+            release/sdk-source-identity.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_CONFIG_DIR: ${{ runner.temp }}/storage-cli-gh-config
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the exact release tag
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node 22
-        uses: actions/setup-node@v6.4.0
+        uses: actions/setup-node@v7.0.0
         with:
           node-version: "22.23.2"
 
-      - name: Require a tag matching the package version
+      - name: Recheck the immutable source identity
+        shell: bash
         run: |
-          expected_version="${GITHUB_REF_NAME#storage-cli-v}"
-          package_version="$(node -e 'console.log(require("./package.json").version)')"
-          test "$expected_version" = "$package_version"
+          set -euo pipefail
+          bash scripts/hardenReleaseTransport.sh . https://github.com/TeleCrypt-io/storage-cli.git
+          node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          test "$(npm --version)" = "10.9.8"
+          timeout 120s git fetch --quiet --force --no-tags origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          test "$(git cat-file -t "$tag_ref")" = tag
+          test "$(git rev-parse "$tag_ref^{commit}")" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_main_line="$(timeout 30s git ls-remote --heads origin refs/heads/main)"
+          test "$(wc -l <<<"$remote_main_line")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_main_line")" = "$GITHUB_SHA"
 
-      - name: Refuse to replace an existing GitHub Release
+      - name: Download and verify the tested archive
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: storage-cli-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: release
+
+      - name: Publish one exact immutable release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set +e
-          inspection="$(gh api --include "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" 2>&1)"
-          status=$?
-          set -e
-          if [ "$status" -eq 0 ]; then
-            echo "GitHub Release $GITHUB_REF_NAME already exists; refusing to replace it" >&2
-            exit 1
-          elif printf '%s\n' "$inspection" | grep -Eq '^HTTP/[0-9.]+ 404([[:space:]]|$)'; then
-            echo "confirmed immutable GitHub Release is unused: $GITHUB_REF_NAME"
+          set -euo pipefail
+          mkdir -m 700 "$GH_CONFIG_DIR"
+          bounded_gh() {
+            output=$1
+            error=$2
+            shift 2
+            : > "$output"
+            : > "$error"
+            set +e
+            bash scripts/bounded-command.sh 1048576 1048576 "$output" "$error" 30 gh "$@"
+            status=$?
+            set -e
+            if [ "$(wc -c < "$output")" -gt 1048576 ] || [ "$(wc -c < "$error")" -gt 1048576 ]; then
+              echo "GitHub CLI output exceeded the 1 MiB bound" >&2
+              return 1
+            fi
+            return "$status"
+          }
+          verify_mutation_boundary() {
+            local boundary_tag_ref="refs/tags/$GITHUB_REF_NAME"
+            timeout 120s git fetch --quiet --force --no-tags origin \
+              "$boundary_tag_ref:$boundary_tag_ref"
+            test "$(git cat-file -t "$boundary_tag_ref")" = tag
+            local boundary_tag_object
+            boundary_tag_object="$(git rev-parse "$boundary_tag_ref")"
+            test "$boundary_tag_object" = "$tag_object"
+            local boundary_tag_commit
+            boundary_tag_commit="$(git rev-parse "$boundary_tag_ref^{commit}")"
+            test "$boundary_tag_commit" = "$GITHUB_SHA"
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+            local boundary_archive_sha256
+            boundary_archive_sha256="$(sha256sum "$archive" | awk '{ print $1 }')"
+            test "$boundary_archive_sha256" = "$archive_sha256"
+            local boundary_remote_tag
+            boundary_remote_tag="$(timeout 30s git ls-remote --refs origin "$boundary_tag_ref")"
+            test "$(wc -l <<<"$boundary_remote_tag")" = 1
+            test "$(awk '{ print $1 }' <<<"$boundary_remote_tag")" = "$boundary_tag_object"
+            local boundary_remote_commit
+            boundary_remote_commit="$(timeout 30s git ls-remote origin "$boundary_tag_ref^{}")"
+            test "$(wc -l <<<"$boundary_remote_commit")" = 1
+            test "$(awk '{ print $1 }' <<<"$boundary_remote_commit")" = "$boundary_tag_commit"
+            local boundary_remote_main_line
+            boundary_remote_main_line="$(timeout 30s git ls-remote --heads origin refs/heads/main)"
+            test "$(wc -l <<<"$boundary_remote_main_line")" = 1
+            test "$(awk '{ print $1 }' <<<"$boundary_remote_main_line")" = "$boundary_tag_commit"
+            local boundary_remote_sdk_tag
+            boundary_remote_sdk_tag="$(timeout 30s git ls-remote --refs https://github.com/TeleCrypt-io/storage-sdk.git "$sdk_ref")"
+            test "$(wc -l <<<"$boundary_remote_sdk_tag")" = 1
+            test "$(awk '{ print $1 }' <<<"$boundary_remote_sdk_tag")" = "$sdk_tag_object"
+            local boundary_remote_sdk_commit
+            boundary_remote_sdk_commit="$(timeout 30s git ls-remote https://github.com/TeleCrypt-io/storage-sdk.git "$sdk_ref^{}")"
+            test "$(wc -l <<<"$boundary_remote_sdk_commit")" = 1
+            test "$(awk '{ print $1 }' <<<"$boundary_remote_sdk_commit")" = "$sdk_tag_commit"
+          }
+          archive="release/${GITHUB_REF_NAME}.tgz"
+          test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" = 1
+          test "$(find release -maxdepth 1 -type f | wc -l)" = 3
+          test -s "$archive"
+          test "$(stat -c%s "$archive")" -le 268435456
+          test -s release/source-identity.txt
+          test "$(wc -c < release/source-identity.txt)" -le 65536
+          test -s release/sdk-source-identity.txt
+
+          # Re-fetch and compare the immutable tag object, peeled commit, tag
+          # ref, and the exact current main tip immediately before any Release
+          # API mutation. The build job's identity files must agree exactly.
+          node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          timeout 120s git fetch --quiet --force --no-tags origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          test "$(git cat-file -t "$tag_ref")" = tag
+          tag_object="$(git rev-parse "$tag_ref")"
+          tag_commit="$(git rev-parse "$tag_ref^{commit}")"
+          test "$tag_commit" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_tag="$(timeout 30s git ls-remote --refs origin "$tag_ref")"
+          test "$(wc -l <<<"$remote_tag")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_tag")" = "$tag_object"
+          remote_commit="$(timeout 30s git ls-remote origin "${tag_ref}^{}")"
+          test "$(wc -l <<<"$remote_commit")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_commit")" = "$tag_commit"
+          remote_main_line="$(timeout 30s git ls-remote --heads origin refs/heads/main)"
+          test "$(wc -l <<<"$remote_main_line")" = 1
+          remote_main="$(awk '{ print $1 }' <<<"$remote_main_line")"
+          test "$remote_main" = "$tag_commit"
+          archive_sha256="$(sha256sum "$archive" | awk '{ print $1 }')"
+          node --input-type=module - release/source-identity.txt "$tag_ref" "$tag_object" "$tag_commit" "$remote_main" "$archive_sha256" <<'NODE'
+          import fs from "node:fs";
+          import { validateSourceIdentity } from "./scripts/releasePolicy.mjs";
+          const [identityPath, tagRef, tagObject, tagCommit, remoteMain, archiveSha256] = process.argv.slice(2);
+          validateSourceIdentity(fs.readFileSync(identityPath, "utf8"), {
+            tag_ref: tagRef,
+            tag_object: tagObject,
+            tag_commit: tagCommit,
+            remote_main: remoteMain,
+            archive_sha256: archiveSha256,
+          });
+          NODE
+
+          test "$(wc -c < release/sdk-source-identity.txt)" -le 65536
+          node --input-type=module - release/sdk-source-identity.txt <<'NODE'
+          import fs from "node:fs";
+          import { validateSdkIdentity } from "./scripts/releasePolicy.mjs";
+          const sdkRef = process.env.SDK_REF;
+          if (!sdkRef || !/^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u.test(sdkRef)) {
+            throw new Error("SDK_REF is not an exact release tag");
+          }
+          validateSdkIdentity(fs.readFileSync(process.argv[2], "utf8"), {
+            tagRef: `refs/tags/${sdkRef}`,
+            version: sdkRef.slice(1),
+          });
+          NODE
+          : "${SDK_REF:?SDK_REF is required}"
+          sdk_ref="refs/tags/$SDK_REF"
+          sdk_tag_object="$(awk -F= '$1 == "tag_object" { print $2 }' release/sdk-source-identity.txt)"
+          sdk_tag_commit="$(awk -F= '$1 == "tag_commit" { print $2 }' release/sdk-source-identity.txt)"
+          remote_sdk_tag="$(timeout 30s git ls-remote --refs https://github.com/TeleCrypt-io/storage-sdk.git "$sdk_ref")"
+          test "$(wc -l <<<"$remote_sdk_tag")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_sdk_tag")" = "$sdk_tag_object"
+          remote_sdk_commit="$(timeout 30s git ls-remote https://github.com/TeleCrypt-io/storage-sdk.git "$sdk_ref^{}")"
+          test "$(wc -l <<<"$remote_sdk_commit")" = 1
+          test "$(awk '{ print $1 }' <<<"$remote_sdk_commit")" = "$sdk_tag_commit"
+
+          timeout 30s tar -tzf "$archive" |
+            head -c 67108864 > "$RUNNER_TEMP/storage-cli-release-contents.txt"
+          timeout 120s node scripts/validateReleaseArchive.mjs \
+            "$RUNNER_TEMP/storage-cli-release-contents.txt" package-lock.json \
+            "$RUNNER_TEMP/storage-cli-release-inventory.txt" "$archive"
+          timeout 30s tar -xOzf "$archive" package/THIRD-PARTY-LICENSES.txt > "$RUNNER_TEMP/storage-cli-release-inventory-archive.txt"
+          cmp -- "$RUNNER_TEMP/storage-cli-release-inventory.txt" "$RUNNER_TEMP/storage-cli-release-inventory-archive.txt"
+          timeout 30s tar -xOzf "$archive" package/package.json > "$RUNNER_TEMP/storage-cli-release-package.json"
+          node --input-type=module - "$RUNNER_TEMP/storage-cli-release-package.json" <<'NODE'
+          import fs from "node:fs";
+          const packageJson = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const expected = process.env.GITHUB_REF_NAME.slice("storage-cli-v".length);
+          if (packageJson.version !== expected) throw new Error("archive package version is not bound to its release tag");
+          NODE
+
+          release_endpoint="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
+          release_json="$RUNNER_TEMP/storage-cli-release.json"
+          release_error="$RUNNER_TEMP/storage-cli-release-error.txt"
+          release_state="missing"
+          if bounded_gh "$release_json" "$release_error" api --hostname github.com \
+            --header "X-GitHub-Api-Version: 2026-03-10" "$release_endpoint"; then
+            release_state="$(node --input-type=module - "$release_json" "$archive" <<'NODE'
+          import fs from "node:fs";
+          import { createHash } from "node:crypto";
+          import { classifyExistingDraft } from "./scripts/releasePolicy.mjs";
+          const [releasePath, archivePath] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          const expectedTag = process.env.GITHUB_REF_NAME;
+          const digest = `sha256:${createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex")}`;
+          process.stdout.write(classifyExistingDraft(release, {
+            tag: expectedTag,
+            archiveName: `${expectedTag}.tgz`,
+            size: fs.statSync(archivePath).size,
+            digest,
+          }));
+          NODE
+            )"
           else
-            echo "cannot prove whether GitHub Release exists: $GITHUB_REF_NAME" >&2
+            release_status=$?
+            if [ "$release_status" -ne 1 ] || ! node --input-type=module - "$release_status" "$release_error" <<'NODE'
+          import fs from "node:fs";
+          import { isConfirmedNotFound } from "./scripts/releasePolicy.mjs";
+          const [status, errorPath] = process.argv.slice(2);
+          if (!isConfirmedNotFound(Number(status), fs.readFileSync(errorPath, "utf8"))) process.exit(1);
+          NODE
+            then
+              cat "$release_error" >&2
+              echo "cannot prove whether the GitHub Release exists" >&2
+              exit 1
+            fi
+          fi
+
+          # Do not create or attach an asset until the live remote identity is
+          # revalidated after the read-only Release probe.
+          verify_mutation_boundary
+          if [ "$release_state" = "missing" ]; then
+            bounded_gh "$RUNNER_TEMP/storage-cli-release-create.out" "$RUNNER_TEMP/storage-cli-release-create.err" \
+              release create "$GITHUB_REF_NAME" \
+              --repo "github.com/$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+            release_state="draft-empty"
+          fi
+          if [ "$release_state" = "draft-empty" ]; then
+            verify_mutation_boundary
+            bounded_gh "$RUNNER_TEMP/storage-cli-release-upload.out" "$RUNNER_TEMP/storage-cli-release-upload.err" \
+              release upload "$GITHUB_REF_NAME" "$archive" --repo "github.com/$GITHUB_REPOSITORY"
+          elif [ "$release_state" != "draft-exact" ]; then
+            echo "unexpected Release state: $release_state" >&2
             exit 1
           fi
 
-      - name: Install exact dependencies
-        run: npm ci --no-fund
+          bounded_gh "$release_json" "$RUNNER_TEMP/storage-cli-release-after-upload.err" \
+            api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_endpoint"
+          digest="sha256:$(sha256sum "$archive" | awk '{print $1}')"
+          node --input-type=module - "$release_json" "$archive" "$digest" <<'NODE'
+          import fs from "node:fs";
+          import { validateDraft } from "./scripts/releasePolicy.mjs";
+          const [releasePath, archivePath, digest] = process.argv.slice(2);
+          validateDraft(JSON.parse(fs.readFileSync(releasePath, "utf8")), {
+            tag: process.env.GITHUB_REF_NAME,
+            archiveName: `${process.env.GITHUB_REF_NAME}.tgz`,
+            size: fs.statSync(archivePath).size,
+            digest,
+          });
+          NODE
 
-      - name: Verify and build
-        run: |
-          npm run lint
-          npm run test:unit
-          npm run build
+          verify_publish_boundary() {
+            # Revalidate the authoritative Git identities first, then fetch and
+            # validate the mutable draft as the final read-only operation before
+            # publication. No other network operation occurs before the PATCH.
+            verify_mutation_boundary
+            bounded_gh "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$RUNNER_TEMP/storage-cli-release-before-publish.err" \
+              api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_endpoint"
+            node --input-type=module - "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$archive" "$digest" <<'NODE'
+          import fs from "node:fs";
+          import { validateDraft } from "./scripts/releasePolicy.mjs";
+          const [releasePath, archivePath, digest] = process.argv.slice(2);
+          validateDraft(JSON.parse(fs.readFileSync(releasePath, "utf8")), {
+            tag: process.env.GITHUB_REF_NAME,
+            archiveName: `${process.env.GITHUB_REF_NAME}.tgz`,
+            size: fs.statSync(archivePath).size,
+            digest,
+          });
+          NODE
+          }
 
-      - name: Package a self-contained CLI archive
-        run: |
-          mkdir release
-          npm pack --ignore-scripts --pack-destination release
-          packed_archive="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
-          test -n "$packed_archive"
-          mv "$packed_archive" "release/${GITHUB_REF_NAME}.tgz"
-          (cd release && sha256sum "${GITHUB_REF_NAME}.tgz" > SHA256SUMS)
+          # The final boundary keeps the authoritative Git checks adjacent to
+          # the final draft/asset validation and irreversible publication.
+          verify_publish_boundary
 
-      - name: Verify offline global installation
-        run: |
-          install_prefix="$RUNNER_TEMP/storage-cli-install"
-          npm install --global --prefix "$install_prefix" --offline --ignore-scripts --no-fund "${GITHUB_WORKSPACE}/release/${GITHUB_REF_NAME}.tgz"
-          "$install_prefix/bin/telecrypt-io" --help
-
-      - name: Attest release archive
-        uses: actions/attest-build-provenance@v4.1.1
-        with:
-          subject-path: release/${{ github.ref_name }}.tgz
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            "release/${GITHUB_REF_NAME}.tgz" \
-            release/SHA256SUMS
+          bounded_gh "$RUNNER_TEMP/storage-cli-published-release.json" "$RUNNER_TEMP/storage-cli-publish.err" \
+            api --hostname github.com --method PATCH \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            -F draft=false "$release_endpoint"
+          bounded_gh "$RUNNER_TEMP/storage-cli-final-release.json" "$RUNNER_TEMP/storage-cli-final-release.err" \
+            api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_endpoint"
+          node --input-type=module - "$RUNNER_TEMP/storage-cli-final-release.json" "$archive" "$digest" <<'NODE'
+          import fs from "node:fs";
+          import { validatePublished } from "./scripts/releasePolicy.mjs";
+          const [releasePath, archivePath, digest] = process.argv.slice(2);
+          validatePublished(JSON.parse(fs.readFileSync(releasePath, "utf8")), {
+            tag: process.env.GITHUB_REF_NAME,
+            archiveName: `${process.env.GITHUB_REF_NAME}.tgz`,
+            size: fs.statSync(archivePath).size,
+            digest,
+          });
+          NODE

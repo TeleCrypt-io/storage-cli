@@ -8,11 +8,13 @@ import {
 
 const createdNames: string[] = [];
 
-function createDatabase(name: string): Promise<void> {
+function createDatabase(name: string, stores = ["store"]): Promise<void> {
   createdNames.push(name);
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(name, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("store");
+    request.onupgradeneeded = () => {
+      for (const store of stores) request.result.createObjectStore(store);
+    };
     request.onsuccess = () => {
       request.result.close();
       resolve();
@@ -42,8 +44,8 @@ describe("crypto snapshot database scope", () => {
     ]);
   });
 
-  it("does not import databases outside the published prefix", async () => {
-    await importIndexedDB({
+  it("rejects databases outside the published prefix", async () => {
+    await expect(importIndexedDB({
       dbs: [
         {
           name: "unrelated-application-database",
@@ -52,10 +54,60 @@ describe("crypto snapshot database scope", () => {
           records: {},
         },
       ],
-    });
+    })).rejects.toThrow(/invalid database/);
 
     expect((await indexedDB.databases()).some(({ name }) => name === "unrelated-application-database")).toBe(
       false,
     );
+  });
+
+  it("rejects duplicate schema names and undeclared record paths before import", async () => {
+    const name = `${TELECRYPT_CRYPTO_DATABASE_PREFIX}invalid`;
+    await expect(importIndexedDB({
+      dbs: [
+        { name, version: 1, stores: [], records: {} },
+        { name, version: 1, stores: [], records: {} },
+      ],
+    })).rejects.toThrow(/duplicate databases/);
+
+    await expect(importIndexedDB({
+      dbs: [{
+        name,
+        version: 1,
+        stores: [],
+        records: { undeclared: [] },
+      }],
+    })).rejects.toThrow(/undeclared store/);
+  });
+
+  it("requires record keys to match the declared IndexedDB key path", async () => {
+    const name = `${TELECRYPT_CRYPTO_DATABASE_PREFIX}keys`;
+    await expect(importIndexedDB({
+      dbs: [{
+        name,
+        version: 1,
+        stores: [{ name: "store", keyPath: null, autoIncrement: false, indexes: [] }],
+        records: { store: [{ value: "missing out-of-line key" }] },
+      }],
+    })).rejects.toThrow(/record key does not match/);
+  });
+
+  it("exports every store without reusing an auto-committed transaction", async () => {
+    const name = `${TELECRYPT_CRYPTO_DATABASE_PREFIX}multi-store`;
+    await createDatabase(name, ["first", "second"]);
+
+    const snapshot = await exportIndexedDB();
+
+    expect(snapshot.dbs.find((db) => db.name === name)?.stores.map(({ name: store }) => store)).toEqual([
+      "first",
+      "second",
+    ]);
+  });
+
+  it("fails before touching IndexedDB when snapshot persistence is cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled by test"));
+
+    await expect(exportIndexedDB(controller.signal)).rejects.toThrow("cancelled by test");
   });
 });

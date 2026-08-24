@@ -1,9 +1,10 @@
 {
   "name": "@telecrypt-io/storage-cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
+  "packageManager": "npm@10.9.8",
   "main": "dist/index.js",
   "bin": {
     "telecrypt-io": "dist/index.js"
@@ -11,7 +12,9 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "CLI.md",
+    "LICENSE",
+    "THIRD-PARTY-LICENSES.txt"
   ],
   "bundleDependencies": [
     "@telecrypt-io/storage",
@@ -20,7 +23,7 @@
     "matrix-js-sdk"
   ],
   "engines": {
-    "node": ">=22.14.0 <23"
+    "node": ">=22.23.2"
   },
   "scripts": {
     "build": "tsc",
@@ -37,12 +40,12 @@
   },
   "devDependencies": {
     "@types/node": "22.20.1",
-    "@typescript-eslint/eslint-plugin": "8.64.0",
-    "@typescript-eslint/parser": "8.64.0",
-    "eslint": "10.8.0",
-    "tsx": "4.23.1",
+    "@typescript-eslint/eslint-plugin": "8.67.0",
+    "@typescript-eslint/parser": "8.67.0",
+    "eslint": "10.9.0",
+    "tsx": "4.23.12",
     "typescript": "5.9.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   },
   "repository": {
     "type": "git",

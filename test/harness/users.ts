@@ -29,7 +29,7 @@ export async function registerUserInMas(username: string, password: string): Pro
   // other registration errors remain immediate failures.
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      await execFileAsync("podman", args);
+      await execFileAsync("podman", args, { timeout: 30_000, maxBuffer: 64 * 1024 });
       return;
     } catch (err) {
       const e = err as { stdout?: unknown; stderr?: unknown };

@@ -1,12 +1,32 @@
-import { describe, it, expect } from "vitest";
+import { afterAll, describe, it, expect } from "vitest";
+import { createServer } from "node:http";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
-import { cliJson, freshProfileDir, runCli } from "../harness/cli";
+import { cleanupFreshProfiles, cliJson, freshProfileDir, markProfileForRemoteCleanup, runCli } from "../harness/cli";
 import { approveDeviceCodeViaHttp } from "../harness/oidcApproval";
 import { registerUserInMas } from "../harness/users";
 import { waitFor } from "../harness/waitFor";
+import type { Session } from "../../src/profile.js";
+import { acquireProfileLock, sessionPath, writeSession } from "../../src/profile.js";
 
 const HOMESERVER = "http://localhost:8008";
+const testArtifactDirs = new Set<string>();
+
+function artifactPath(name: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-cli-artifact-"));
+  fs.chmodSync(dir, 0o700);
+  testArtifactDirs.add(dir);
+  return path.join(dir, name);
+}
+
+afterAll(async () => {
+  try {
+    await cleanupFreshProfiles();
+  } finally {
+    for (const dir of testArtifactDirs) fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function randomUser(prefix: string): string {
   // MAS enforces lowercase Matrix localparts.
@@ -34,17 +54,16 @@ async function loginProfileOnce(
   let result;
   try {
     result = await runCli(
-      ["storage", "login", "--homeserver", HOMESERVER, "--json"],
+      ["storage", "login", "--homeserver", HOMESERVER, "--no-browser", "--json"],
       {
         TELECRYPT_IO_STORAGE_HOME: dir,
-        TELECRYPT_IO_STORAGE_NO_BROWSER: "1",
       },
       {
         abortSignal: approvalAbort.signal,
         onStderr(stderr) {
           const match = stderr.match(/and enter code: ([^\s]+)/);
           if (!match || approval) return;
-          approval = approveDeviceCodeViaHttp(user.username, user.password, match[1]).catch((err) => {
+          approval = approveDeviceCodeViaHttp(user.username, user.password, match[1], approvalAbort.signal).catch((err) => {
             approvalFailure = new Error(`local MAS device approval failed: ${(err as Error).message}`);
             approvalAbort.abort(approvalFailure);
           });
@@ -75,7 +94,19 @@ async function loginProfile(
       return await loginProfileOnce(dir, user);
     } catch (err) {
       lastError = err;
-      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 500));
+      if (attempt < 3) {
+        // A device grant can leave login-pending.json when initialization
+        // fails after remote authorization. Revoke and clear that exact
+        // profile before retrying; otherwise the CLI's fresh-profile fence
+        // correctly refuses every subsequent attempt.
+        const cleanup = await runCli(
+          ["storage", "logout", "--json"],
+          { TELECRYPT_IO_STORAGE_HOME: dir },
+          { timeoutMs: 20_000 },
+        );
+        if (cleanup.code !== 0) throw lastError;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
     }
   }
   throw lastError;
@@ -88,10 +119,92 @@ async function registerProfile(
   const username = randomUser(prefix);
   const password = "pw_" + Math.random().toString(36).slice(2, 10);
   await registerUserInMas(username, password);
-  return loginProfile(dir, { username, password });
+  // Mark the profile before authorization begins: a device grant can issue a
+  // bearer session before local persistence completes, leaving only the
+  // retryable pending file for teardown to revoke.
+  markProfileForRemoteCleanup(dir);
+  const profile = await loginProfile(dir, { username, password });
+  return profile;
 }
 
 describe("CLI", () => {
+  it("fences a concurrent read command while a profile transaction owns the lock", async () => {
+    const dir = freshProfileDir("concurrent-profile");
+    const session: Session = {
+      homeserver: HOMESERVER,
+      userId: "@concurrent:example.test",
+      matrixServerName: "example.test",
+      deviceId: "CONCURRENTDEVICE",
+      accessToken: "concurrent-access-token",
+      oidcIssuer: `${HOMESERVER}/auth/`,
+      refreshToken: "concurrent-refresh-token",
+      oidcClientId: "concurrent-client",
+      oidcTokenEndpoint: `${HOMESERVER}/auth/token`,
+      oidcRevocationEndpoint: `${HOMESERVER}/auth/revoke`,
+    };
+    writeSession(session, dir);
+    const lock = acquireProfileLock(dir);
+    try {
+      const blocked = await runCli(["storage", "whoami", "--json"], {
+        TELECRYPT_IO_STORAGE_HOME: dir,
+      });
+      expect(blocked.code).not.toBe(0);
+      expect(JSON.parse(blocked.stderr)).toEqual({
+        error: "profile is busy; retry after the other storage command exits",
+      });
+      expect(blocked.stderr).not.toContain(session.accessToken);
+    } finally {
+      lock.release();
+    }
+    const after = await runCli(["storage", "whoami", "--json"], {
+      TELECRYPT_IO_STORAGE_HOME: dir,
+    });
+    expect(after.code).toBe(0);
+    expect(JSON.parse(after.stdout)).toMatchObject({ userId: session.userId, deviceId: session.deviceId });
+  });
+
+  it("logout exits nonzero and retains the profile when server revocation fails", async () => {
+    const dir = freshProfileDir("logout-failure");
+    const server = createServer((_request, response) => {
+      response.writeHead(503);
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not expose a port");
+      const session: Session = {
+        homeserver: `http://127.0.0.1:${address.port}`,
+        userId: "@logout:example.test",
+        matrixServerName: "example.test",
+        deviceId: "LOGOUTDEVICE",
+        accessToken: "logout-access-token",
+        oidcIssuer: `http://127.0.0.1:${address.port}/auth/`,
+        refreshToken: "logout-refresh-token",
+        oidcClientId: "logout-client",
+        oidcTokenEndpoint: `http://127.0.0.1:${address.port}/auth/token`,
+        oidcRevocationEndpoint: `http://127.0.0.1:${address.port}/auth/revoke`,
+      };
+    writeSession(session, dir);
+
+      const result = await runCli(["storage", "logout", "--json"], {
+        TELECRYPT_IO_STORAGE_HOME: dir,
+      });
+
+      expect(result.code).not.toBe(0);
+      expect(JSON.parse(result.stderr)).toEqual({ error: "server logout failed (HTTP 503)" });
+      expect(result.stderr).not.toContain(session.accessToken);
+      expect(fs.existsSync(sessionPath(dir))).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   it(
     "CLI.1 cross-process persistence: upload in one process, download in a separate one, byte-identical",
     async () => {
@@ -111,7 +224,7 @@ describe("CLI", () => {
       const vaultId = vaultRes.json.id as string;
       expect(vaultId).toBeTruthy();
 
-      const srcPath = path.join(dir, "source.txt");
+      const srcPath = artifactPath("source.txt");
       const originalBytes = `cross-process proof ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
 
@@ -123,7 +236,7 @@ describe("CLI", () => {
       // A completely fresh process, no state shared except the profile dir on
       // disk: this is the actual proof. If crypto persistence failed, this
       // would throw a decryption error (empty megolm store).
-      const destPath = path.join(dir, "downloaded.txt");
+      const destPath = artifactPath("downloaded.txt");
       const downloadRes = await cliJson(
         ["storage", "file", "download", vaultId, fileId, destPath],
         env,
@@ -164,7 +277,7 @@ describe("CLI", () => {
       const joinRes = await cliJson(["storage", "vault", "join", vaultId], envB);
       expect(joinRes.code).toBe(0);
 
-      const srcPath = path.join(dirB, "from-b.txt");
+      const srcPath = artifactPath("from-b.txt");
       const originalBytes = `B's file ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
 
@@ -177,10 +290,10 @@ describe("CLI", () => {
       // succeed on the first try — but poll the real condition (repeated
       // fresh CLI invocations, each a genuine independent sync) rather than
       // assume, since key delivery is still asynchronous end-to-end.
-      const destPath = path.join(dirA, "from-b-downloaded.txt");
+      const destPath = artifactPath("from-b-downloaded.txt");
       const downloadResult = await waitFor(
-        async () => {
-          const res = await cliJson(["storage", "file", "download", vaultId, fileId, destPath], envA);
+        async (attemptSignal) => {
+          const res = await cliJson(["storage", "file", "download", vaultId, fileId, destPath], envA, { abortSignal: attemptSignal });
           return res.code === 0 ? res : null;
         },
         { label: "A decrypts B's file", timeoutMs: 30000, intervalMs: 1500 },
@@ -216,8 +329,8 @@ describe("CLI", () => {
       await cliJson(["storage", "vault", "join", vaultId], envB);
 
       const membersRes = await waitFor(
-        async () => {
-          const res = await cliJson(["storage", "vault", "members", vaultId], envA);
+        async (attemptSignal) => {
+          const res = await cliJson(["storage", "vault", "members", vaultId], envA, { abortSignal: attemptSignal });
           const members = (res.json.members as { userId: string; role: string }[]) ?? [];
           return members.length >= 2 ? res : null;
         },
@@ -235,8 +348,8 @@ describe("CLI", () => {
       // Promote to editor and confirm `vault members` reflects it.
       await cliJson(["storage", "vault", "share", vaultId, userB.userId, "--role", "editor"], envA);
       const updated = await waitFor(
-        async () => {
-          const res = await cliJson(["storage", "vault", "members", vaultId], envA);
+        async (attemptSignal) => {
+          const res = await cliJson(["storage", "vault", "members", vaultId], envA, { abortSignal: attemptSignal });
           const m = (res.json.members as { userId: string; role: string }[]).find(
             (x) => x.userId === userB.userId,
           );
@@ -263,7 +376,7 @@ describe("CLI", () => {
       const vaultRes = await cliJson(["storage", "vault", "create", "RecoverMe"], env1);
       const vaultId = vaultRes.json.id as string;
 
-      const srcPath = path.join(dir1, "important.txt");
+      const srcPath = artifactPath("important.txt");
       const originalBytes = `recoverable content ${Math.random()}`;
       fs.writeFileSync(srcPath, originalBytes);
       const uploadRes = await cliJson(["storage", "file", "upload", vaultId, srcPath], env1);
@@ -283,9 +396,10 @@ describe("CLI", () => {
         fs.readFileSync(path.join(dir1, "session.json"), "utf8"),
       ) as { accessToken: string };
       await waitFor(
-        async () => {
+        async (attemptSignal) => {
           const res = await fetch(`${HOMESERVER}/_matrix/client/v3/room_keys/version`, {
             headers: { Authorization: `Bearer ${accessTokenRes.accessToken}` },
+            signal: attemptSignal,
           });
           if (!res.ok) return null;
           const info = (await res.json()) as { count?: number };
@@ -298,18 +412,19 @@ describe("CLI", () => {
       // crypto store) + a second MAS OIDC device authorization.
       const dir2 = freshProfileDir("recoverDev2");
       const env2 = { TELECRYPT_IO_STORAGE_HOME: dir2 };
+      markProfileForRemoteCleanup(dir2);
       const newDevice = await loginProfile(dir2, user);
       expect(newDevice.userId).toBe(user.userId);
 
       // Negative control: before restoring, device 2 must NOT be able to
       // decrypt the file — proves the new device really does start empty.
-      const destPath = path.join(dir2, "recovered.txt");
+      const destPath = artifactPath("recovered.txt");
       const beforeRestore = await waitFor(
-        async () => {
+        async (attemptSignal) => {
           // Poll until the vault/file are at least *visible* to device 2
           // (independent of decryption), so the eventual failure below is a
           // genuine decryption failure, not "vault not found yet".
-          const listing = await cliJson(["storage", "file", "list", vaultId], env2);
+          const listing = await cliJson(["storage", "file", "list", vaultId], env2, { abortSignal: attemptSignal });
           const files = (listing.json.files as { id: string }[] | undefined) ?? [];
           return files.some((f) => f.id === fileId) ? listing : null;
         },
@@ -333,8 +448,8 @@ describe("CLI", () => {
       expect(restoreRes.json.imported as number).toBeGreaterThan(0);
 
       const recovered = await waitFor(
-        async () => {
-          const res = await cliJson(["storage", "file", "download", vaultId, fileId, destPath], env2);
+        async (attemptSignal) => {
+          const res = await cliJson(["storage", "file", "download", vaultId, fileId, destPath], env2, { abortSignal: attemptSignal });
           return res.code === 0 ? res : null;
         },
         { label: "device 2 decrypts after restore", timeoutMs: 20000 },
@@ -379,7 +494,7 @@ describe("CLI", () => {
       expect(renameChild.code).toBe(0);
       expect(renameChild.json).toMatchObject({ id: childId, name: "Child Renamed" });
 
-      const source = path.join(dir, "before-rename.txt");
+      const source = artifactPath("before-rename.txt");
       fs.writeFileSync(source, `tree operation proof ${Math.random()}`);
       const upload = await cliJson(["storage", "file", "upload", parentId, source], env);
       expect(upload.code).toBe(0);
@@ -421,13 +536,23 @@ describe("CLI", () => {
   );
 
   describe("CLI.6 error paths: clean non-zero exit + JSON error, no stack traces", () => {
+    it("renders commander parse errors as one JSON diagnostic", async () => {
+      const dir = freshProfileDir("json-parse-error");
+      const res = await cliJson(["storage", "command-that-does-not-exist"], {
+        TELECRYPT_IO_STORAGE_HOME: dir,
+      });
+      expect(res.code).not.toBe(0);
+      expect(res.stdout.trim()).toBe("");
+      expect(typeof res.json.error).toBe("string");
+      expect(res.stderr.trim().startsWith("{")).toBe(true);
+    });
+
     it("login rejects a local endpoint without Matrix OIDC discovery", async () => {
       const dir = freshProfileDir("missing-oidc");
       const res = await cliJson(
-        ["storage", "login", "--homeserver", `${HOMESERVER}/not-a-homeserver`],
+        ["storage", "login", "--homeserver", `${HOMESERVER}/not-a-homeserver`, "--no-browser"],
         {
           TELECRYPT_IO_STORAGE_HOME: dir,
-          TELECRYPT_IO_STORAGE_NO_BROWSER: "1",
         },
       );
       expect(res.code).not.toBe(0);
@@ -462,7 +587,7 @@ describe("CLI", () => {
         const vaultId = vaultRes.json.id as string;
 
         const res = await cliJson(
-          ["storage", "file", "download", vaultId, "$doesnotexist12345", path.join(dir, "out.txt")],
+          ["storage", "file", "download", vaultId, "$doesnotexist12345", artifactPath("out.txt")],
           env,
         );
         expect(res.code).not.toBe(0);

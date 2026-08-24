@@ -88,4 +88,58 @@ describe("local MAS device approval", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
+
+  it("bounds local MAS HTML responses", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response("x".repeat((1 << 20) + 1)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(approveDeviceCodeViaHttp("alice", "test-only-password", "ABC-123")).rejects.toThrow(
+      /response exceeds the output limit/,
+    );
+  });
+
+  it("aborts a hung MAS response body by the approval deadline and bounds stream cleanup", async () => {
+    vi.useFakeTimers();
+    try {
+      let cancelCalled = false;
+      const body = new ReadableStream<Uint8Array>({
+        cancel: () => {
+          cancelCalled = true;
+          return new Promise<void>(() => {});
+        },
+      });
+      const fetchMock = vi.fn().mockResolvedValue(new Response(body));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const approval = approveDeviceCodeViaHttp("alice", "test-only-password", "ABC-123");
+      const failure = expect(approval).rejects.toThrow(/approval cancelled/);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await failure;
+      expect(cancelCalled).toBe(true);
+
+      // The reader's deliberately hung cancel must not leave a live cleanup
+      // timer or an unhandled rejection after the bounded grace period.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a fetch implementation that ignores approval cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const approval = approveDeviceCodeViaHttp("alice", "test-only-password", "ABC-123");
+      const failure = expect(approval).rejects.toThrow(/approval cancelled/);
+      await vi.advanceTimersByTimeAsync(15_000);
+      await failure;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

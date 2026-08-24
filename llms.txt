@@ -1,118 +1,27 @@
 # TeleCrypt.io Storage CLI
 
-> E2EE file storage and sharing on Matrix, distributed only as exact GitHub Release archives. It
-> provides `telecrypt-io storage` commands and supports `--json` for machine-readable output.
+> End-to-end encrypted file storage and sharing on Matrix, distributed only as exact GitHub
+> Release archives. The canonical command and recovery reference is [CLI.md](./CLI.md).
 
-## What it is
+TeleCrypt.io Storage CLI provides the `telecrypt-io storage` command group over one exact
+`@telecrypt-io/storage` library version. It supports MAS/OIDC device authorization, private local
+profiles, shared vaults, nested folders, encrypted file upload/download, and server-side recovery-key
+setup/export and restore. It never sends a Matrix password login and the server cannot decrypt files.
 
-TeleCrypt.io Storage CLI is a command-line client for encrypted file storage and sharing on Matrix homeservers. Files are encrypted locally before upload; the server stores only ciphertext. Sharing is by Matrix user ID (format: `@localpart:homeserver.io`). Essential for agents: save recovery keys (only way to recover on a new device), and understand that the server cannot decrypt your files.
+Install only an existing exact release archive, never an NPM registry package. Use the command
+reference for the immutable archive URL, runtime requirement, `--json` contract, profile security,
+sharing, file, logout, and recovery behavior.
 
-### Installation
+For agents, treat exit code 0 as success and nonzero as failure; with `--json`, parse the structured
+success output on stdout or the error object on stderr. Preserve the Recovery Key: it is required to
+restore encrypted keys on a new device. Logout revokes the server session before deleting local
+credentials; if revocation fails, the profile remains for retry.
 
-```bash
-npm install -g https://github.com/TeleCrypt-io/storage-cli/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
-```
+The CLI is Linux-only and requires Node.js 22.23.2 or newer. Set `TELECRYPT_IO_STORAGE_HOME` only
+to a canonical absolute path; `storage login --no-browser` suppresses the optional browser launch.
+Profile confidentiality comes from owner-only filesystem permissions; the
+profile's bearer credentials and cryptographic state do not have an additional application-level
+at-rest encryption wrapper.
 
-Replace `X.Y.Z` with an existing exact release. There is no `@telecrypt-io/storage-cli` package in
-the NPM registry; `npm` is used only to install the immutable archive fetched from GitHub.
-
-## CLI command tree
-
-All commands use the format `telecrypt-io storage <command> [args] [--json]`. The `--json` flag may
-appear anywhere on the command line and enables machine-readable output (JSON on success,
-`{"error": "..."}` on failure with exit code 1).
-
-### Session management
-
-**`login`** — Log in and persist the session to the local profile
-- `telecrypt-io storage login --homeserver https://backend.telecrypt.io --json` (OIDC/MAS device-code grant; opens browser for approval)
-
-**`whoami`** — Print the current session identity
-- `telecrypt-io storage whoami --json`
-
-**`logout`** — Clear the local profile and session
-- `telecrypt-io storage logout --json`
-
-### Recovery (cross-signing & key backup)
-
-**`recovery setup`** — Set up server-side key backup and print the Recovery Key
-- `telecrypt-io storage recovery setup --json`
-- Output includes `recoveryKey` (a long string); **save this** — it is the only way to recover your files on a new device
-
-**`recovery restore`** — Restore keys on a new device from a Recovery Key
-- `printf '%s' "$RECOVERY_KEY" | telecrypt-io storage recovery restore --key-stdin --json`
-
-### Vaults (shared storage spaces)
-
-**`vault create`** — Create a new shared vault
-- `telecrypt-io storage vault create "My Secure Vault" --json`
-
-**`vault list`** — List vaults you have access to
-- `telecrypt-io storage vault list --json`
-
-**`vault subfolder`** — Create, list, rename, or delete nested folders in a vault
-- `telecrypt-io storage vault subfolder create PARENT_ID "Documents" --json`
-- `telecrypt-io storage vault subfolder list PARENT_ID --json`
-- `telecrypt-io storage vault subfolder rename FOLDER_ID "Renamed" --json`
-- `telecrypt-io storage vault subfolder delete FOLDER_ID --json`
-
-**`vault join`** — Accept a pending vault invitation
-- `telecrypt-io storage vault join '!roomid:homeserver.io' --json`
-
-**`vault share`** — Invite a user to a vault with a specific role
-- `telecrypt-io storage vault share '!roomid:homeserver.io' @alice:homeserver.io --json` (default: viewer role)
-- `telecrypt-io storage vault share '!roomid:homeserver.io' @alice:homeserver.io --role editor --json`
-
-**`vault members`** — List participants and their roles in a vault
-- `telecrypt-io storage vault members '!roomid:homeserver.io' --json`
-
-**`vault unshare`** — Remove a participant from a vault
-- `telecrypt-io storage vault unshare '!roomid:homeserver.io' @alice:homeserver.io --json`
-
-**`vault rename` / `vault delete`** — Rename or delete a top-level vault
-- `telecrypt-io storage vault rename '!roomid:homeserver.io' "Renamed Vault" --json`
-- `telecrypt-io storage vault delete '!roomid:homeserver.io' --json`
-
-### File operations
-
-**`file upload`** — Encrypt and upload a local file into a vault or folder
-- `telecrypt-io storage file upload TREE_ID /path/to/document.pdf --json`
-- `telecrypt-io storage file upload TREE_ID /path/to/document.pdf --name "My Document" --json` (custom name)
-
-**`file list`** — List files in a vault or folder
-- `telecrypt-io storage file list TREE_ID --json`
-
-**`file download`** — Download and decrypt a file to a local path
-- `telecrypt-io storage file download TREE_ID FILE_ID /path/to/dest --json`
-
-**`file rename` / `file delete`** — Rename or delete a file in a vault or folder
-- `telecrypt-io storage file rename TREE_ID FILE_ID "Renamed" --json`
-- `telecrypt-io storage file delete TREE_ID FILE_ID --json`
-
-## Machine-readable output
-
-All commands with `--json` return structured JSON on success:
-
-```json
-{"userId": "@alice:telecrypt.io", "deviceId": "ABCD1234", "homeserver": "https://backend.telecrypt.io"}
-```
-
-On error (command exits with code 1):
-
-```json
-{"error": "device login was not approved"}
-```
-
-Agents should check exit code (0 = success, 1 = failure) and parse stderr for error JSON.
-
-## Gotchas for agents
-
-1. **Recovery Key is irreplaceable.** After `recovery setup`, the output includes `recoveryKey`: a long string. Save it somewhere persistent and retrievable. It is the **only** way to recover your files if you log in on a new device or factory-reset your current one. If lost, your keys are gone forever.
-
-2. **Sharing uses Matrix User IDs.** When sharing a vault with `vault share`, the recipient must be identified by their full Matrix User ID (e.g., `@alice:homeserver.io`), not just a username. You must know their homeserver to construct the ID.
-
-3. **Files are end-to-end encrypted; the server never decrypts.** The server stores only the encrypted bytes. Even if an attacker gains access to the server's database, they see only ciphertext. Encryption keys are stored in the local profile (cross-signing keys + per-file keys derived from the vault's shared secret).
-
-4. **Session/profile is local.** The OIDC session and crypto store live in `~/.telecrypt-io/storage`. The CLI creates the profile directory and secret files with modes `0700`/`0600`; before loading, it requires current-user ownership, rejects symlinks/non-regular files, and rejects group/world access. Logging out deletes the local profile. A new device means a new profile and the need to restore keys via `recovery restore`.
-
-5. **Homeserver is required for login.** Always specify `--homeserver` with the full URL (e.g., `https://backend.telecrypt.io`). The CLI does not default to any public server; you must pass it explicitly.
+Development and real-stack acceptance are local-only. The Storage SDK repository owns the disposable
+fixture; Harness acceptance is never hosted CI and never targets a production server.
