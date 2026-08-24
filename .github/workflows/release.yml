@@ -239,7 +239,8 @@ jobs:
       - name: Upload the tested archive
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: storage-cli-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          name: storage-cli-${{ github.ref_name }}-${{ github.run_id }}-${{ github.sha }}
+          overwrite: true
           path: |
             release/${{ github.ref_name }}.tgz
             release/source-identity.txt
@@ -287,7 +288,7 @@ jobs:
       - name: Download and verify the tested archive
         uses: actions/download-artifact@v8.0.1
         with:
-          name: storage-cli-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          name: storage-cli-${{ github.ref_name }}-${{ github.run_id }}-${{ github.sha }}
           path: release
 
       - name: Publish one exact immutable release
