@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { readBoundedInput, writeBoundedDownload } from "../src/fileTransfer.js";
+import { MAX_MEDIA_FILE_BYTES } from "../src/limits.js";
 
 const directories: string[] = [];
 
@@ -18,6 +19,33 @@ function directory(): string {
 }
 
 describe("bounded file transfer paths", () => {
+  it("accepts an exact 128 MiB source and rejects the next byte", () => {
+    const dir = directory();
+    const source = path.join(dir, "exact.bin");
+    fs.writeFileSync(source, Buffer.alloc(0));
+    fs.truncateSync(source, MAX_MEDIA_FILE_BYTES);
+
+    expect(readBoundedInput(source)).toHaveLength(MAX_MEDIA_FILE_BYTES);
+
+    const oversized = path.join(dir, "oversized.bin");
+    fs.writeFileSync(oversized, Buffer.alloc(0));
+    fs.truncateSync(oversized, MAX_MEDIA_FILE_BYTES + 1);
+    expect(() => readBoundedInput(oversized)).toThrow("input file exceeds the 128 MiB limit");
+  });
+
+  it("accepts an exact 128 MiB download and rejects an oversized result before touching disk", () => {
+    const dir = directory();
+    const destination = path.join(dir, "exact.bin");
+    writeBoundedDownload(destination, Buffer.alloc(MAX_MEDIA_FILE_BYTES));
+    expect(fs.statSync(destination).size).toBe(MAX_MEDIA_FILE_BYTES);
+
+    expect(() => writeBoundedDownload(
+      path.join(dir, "oversized.bin"),
+      { byteLength: MAX_MEDIA_FILE_BYTES + 1 } as Uint8Array,
+    )).toThrow("download exceeds the 128 MiB limit");
+    expect(fs.existsSync(path.join(dir, "oversized.bin"))).toBe(false);
+  });
+
   it("reads through a stable descriptor and writes an atomic destination", () => {
     const dir = directory();
     const source = path.join(dir, "source.txt");

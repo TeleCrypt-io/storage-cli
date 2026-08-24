@@ -2,7 +2,7 @@ import fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { StorageError } from "@telecrypt-io/storage/core";
-import { MAX_MEDIA_FILE_BYTES } from "./profile.js";
+import { MAX_MEDIA_FILE_BYTES } from "./limits.js";
 
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
 const PROC_FD_ROOT = "/proc/self/fd";

@@ -30,11 +30,11 @@
  */
 import * as v8 from "node:v8";
 import {
-  MAX_PRIVATE_FILE_BYTES,
   readPrivateFile,
   writePrivateFile,
   type ProfileLock,
 } from "./profile.js";
+import { MAX_PRIVATE_FILE_BYTES } from "./limits.js";
 
 interface IndexSpec {
   name: string;

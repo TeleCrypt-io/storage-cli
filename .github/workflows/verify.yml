@@ -40,6 +40,8 @@ jobs:
           bash test/releaseTransport.test.sh
       - name: Require the bundled npm release toolchain
         run: test "$(npm --version)" = "10.9.8"
+      - name: Require exact v1 consumer dependency releases
+        run: npm run verify:dependencies
       - run: timeout 300s npm ci --ignore-scripts --no-fund --no-audit
       - run: timeout 180s npm run lint
       - run: timeout 300s npm run test:unit

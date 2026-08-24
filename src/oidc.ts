@@ -18,12 +18,12 @@ import {
 import type { OidcClientConfig } from "@telecrypt-io/storage/core";
 import {
   canonicalMatrixServerName,
-  expectedMatrixServerName,
   isCanonicalMatrixUserId,
   type PendingSession,
   type Session,
 } from "./profile.js";
 import { settlePromiseWithin } from "./cancellation.js";
+import { expectedMatrixServerName, isExactLoopbackHost } from "./topology.js";
 
 /** Carries the exact bearer credentials that must be revoked when a device
  * grant succeeded but the CLI could not finish identity verification or
@@ -149,10 +149,6 @@ async function withOidcWindowStorage<T>(
     // made by another invocation (or by the operation itself).
     restore();
   }
-}
-
-function isExactLoopbackHost(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
 }
 
 function requireOpaqueValue(value: unknown, name: string): string {
@@ -290,7 +286,11 @@ function parseOidcUrl(value: unknown, name: string, allowQuery = false, canonica
 /** Validates the user-supplied homeserver before any discovery request. */
 export function assertTrustedHomeserver(value: unknown): string {
   parseOidcUrl(value, "homeserver", false, false);
-  return value as string;
+  const homeserver = value as string;
+  if (!expectedMatrixServerName(homeserver)) {
+    throw new StorageError("homeserver is not a supported TeleCrypt deployment");
+  }
+  return homeserver;
 }
 
 function isWithinIssuerPath(issuer: URL, endpoint: URL): boolean {

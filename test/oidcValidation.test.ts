@@ -98,6 +98,15 @@ describe("CLI OIDC endpoint validation", () => {
   );
 
   it.each([
+    "https://backend.preview.telecrypt.io",
+    "https://backend-stage.telecrypt.io",
+    "https://evil.example",
+    "https://backend.telecrypt.io:443",
+  ])("rejects a homeserver outside the exact deployment allowlist: %s", (homeserver) => {
+    expect(() => assertTrustedHomeserver(homeserver)).toThrow(/supported TeleCrypt deployment/u);
+  });
+
+  it.each([
     ["issuer", { issuer: "https://accounts.example.test/auth/" }],
     ["authorization endpoint", { authorization_endpoint: "https://accounts.example.test/auth/authorize" }],
     ["device authorization endpoint", { device_authorization_endpoint: "https://accounts.example.test/auth/device" }],

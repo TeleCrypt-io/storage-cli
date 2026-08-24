@@ -136,8 +136,8 @@ jobs:
           # lockfile and binds their npm gitHead to the checked tag commit.
           selected_version="$(node -p 'require("./package.json").dependencies["@telecrypt-io/storage"]')"
           if test "$selected_version" != "$sdk_version"; then
-            echo "SDK registry-byte verification deferred: manifest does not yet select $sdk_version" >&2
-            exit 0
+            echo "SDK registry-byte verification requires the manifest to select $sdk_version; current selection is $selected_version" >&2
+            exit 1
           fi
           mkdir -p "$RUNNER_TEMP/storage-sdk-package"
           timeout 120s npm pack --ignore-scripts --no-package-lock \
@@ -150,6 +150,7 @@ jobs:
 
       - name: Require exact package and lockfile versions
         run: |
+          node scripts/verify-consumer-dependencies.mjs
           node --input-type=module <<'NODE'
           import fs from "node:fs";
 

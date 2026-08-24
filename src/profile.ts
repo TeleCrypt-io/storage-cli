@@ -2,6 +2,11 @@ import fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
+import { expectedMatrixServerName } from "./topology.js";
+import { MAX_PRIVATE_FILE_BYTES } from "./limits.js";
+
+export { expectedMatrixServerName } from "./topology.js";
+export { MAX_MEDIA_FILE_BYTES, MAX_PRIVATE_FILE_BYTES } from "./limits.js";
 
 export interface Session {
   homeserver: string;
@@ -83,9 +88,6 @@ function isPersistedOidcBinding(value: unknown, homeserver: unknown, issuer?: st
 const MAX_SESSION_VALUE_BYTES = 16 * 1024;
 export const MAX_MATRIX_USER_ID_BYTES = 255;
 
-const TELECRYPT_PRODUCTION_BACKEND = "backend.telecrypt.io";
-const TELECRYPT_STAGE_BACKEND = "backend.stage.telecrypt.io";
-
 export function isCanonicalMatrixServerName(value: unknown): value is string {
   if (
     typeof value !== "string" ||
@@ -140,37 +142,6 @@ export function isCanonicalMatrixServerName(value: unknown): value is string {
     if (numericPort < 1 || numericPort > 65535 || String(numericPort) !== port) return false;
   }
   return true;
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
-}
-
-/** Returns the independently trusted Matrix server name for the supported
- * TeleCrypt backend topology. The local disposable fixture is deliberately
- * bound to one fixed loopback identity, so callers cannot override it. */
-export function expectedMatrixServerName(homeserver: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(homeserver);
-  } catch {
-    return null;
-  }
-  if (
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    parsed.search !== "" ||
-    parsed.hash !== "" ||
-    parsed.pathname !== "/"
-  ) {
-    return null;
-  }
-  if (homeserver !== parsed.origin && homeserver !== `${parsed.origin}/`) return null;
-  if (isLoopbackHostname(parsed.hostname)) return parsed.protocol === "http:" ? "example.test" : null;
-  if (parsed.protocol !== "https:" || parsed.port !== "") return null;
-  if (parsed.hostname === TELECRYPT_PRODUCTION_BACKEND) return "telecrypt.io";
-  if (parsed.hostname === TELECRYPT_STAGE_BACKEND) return "stage.telecrypt.io";
-  return null;
 }
 
 export function canonicalMatrixServerName(userId: string): string | null {
@@ -292,8 +263,6 @@ export function logoutMarkerPath(dir: string = profileDir()): string {
 const profileLockPath = (dir: string): string => path.join(dir, ".profile.lock");
 export const MAX_SESSION_BYTES = 16 * 1024;
 /** Private local profile and crypto snapshot ceiling; media has its own 128 MiB limit. */
-export const MAX_PRIVATE_FILE_BYTES = 64 * 1024 * 1024;
-export const MAX_MEDIA_FILE_BYTES = 128 * 1024 * 1024;
 
 function serializeBoundedSession(value: Session | PendingSession, label: string): string {
   const serialized = JSON.stringify(value, null, 2);
