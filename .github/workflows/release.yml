@@ -251,7 +251,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      GH_CONFIG_DIR: ${{ runner.temp }}/storage-cli-gh-config
+      GH_CONFIG_DIR: ${{ github.workspace }}/.storage-cli-gh-config
     permissions:
       contents: write
     steps:
