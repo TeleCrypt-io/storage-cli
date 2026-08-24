@@ -84,9 +84,7 @@ const MAX_SESSION_VALUE_BYTES = 16 * 1024;
 export const MAX_MATRIX_USER_ID_BYTES = 255;
 
 const TELECRYPT_PRODUCTION_BACKEND = "backend.telecrypt.io";
-const TELECRYPT_SUFFIX = ".telecrypt.io";
-const TELECRYPT_PREPRODUCTION_PREFIX = "backend.";
-const MAX_SERVER_LABEL_BYTES = 40;
+const TELECRYPT_STAGE_BACKEND = "backend.stage.telecrypt.io";
 
 export function isCanonicalMatrixServerName(value: unknown): value is string {
   if (
@@ -171,20 +169,7 @@ export function expectedMatrixServerName(homeserver: string): string | null {
   if (isLoopbackHostname(parsed.hostname)) return parsed.protocol === "http:" ? "example.test" : null;
   if (parsed.protocol !== "https:" || parsed.port !== "") return null;
   if (parsed.hostname === TELECRYPT_PRODUCTION_BACKEND) return "telecrypt.io";
-  if (
-    parsed.hostname.startsWith(TELECRYPT_PREPRODUCTION_PREFIX) &&
-    parsed.hostname.endsWith(TELECRYPT_SUFFIX)
-  ) {
-    const serverName = parsed.hostname.slice(TELECRYPT_PREPRODUCTION_PREFIX.length);
-    const label = serverName.slice(0, -TELECRYPT_SUFFIX.length);
-    if (
-      Buffer.byteLength(label, "utf8") >= 1 &&
-      Buffer.byteLength(label, "utf8") <= MAX_SERVER_LABEL_BYTES &&
-      /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(label)
-    ) {
-      return serverName;
-    }
-  }
+  if (parsed.hostname === TELECRYPT_STAGE_BACKEND) return "stage.telecrypt.io";
   return null;
 }
 

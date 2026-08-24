@@ -71,6 +71,7 @@ describe("secret-bearing CLI profile state", () => {
   it("binds only exact canonical MXIDs to the independently trusted TeleCrypt topology", () => {
     expect(expectedMatrixServerName("https://backend.telecrypt.io")).toBe("telecrypt.io");
     expect(expectedMatrixServerName("https://backend.stage.telecrypt.io")).toBe("stage.telecrypt.io");
+    expect(expectedMatrixServerName("https://backend.preview.telecrypt.io")).toBeNull();
     expect(expectedMatrixServerName("https://backend-stage.telecrypt.io")).toBeNull();
     expect(expectedMatrixServerName("https://backend.telecrypt.io:443")).toBeNull();
     expect(expectedMatrixServerName("https://backend.telecrypt.io/path")).toBeNull();
