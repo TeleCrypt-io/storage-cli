@@ -38,9 +38,10 @@ is Linux with Node.js `>=22.23.2`; release verification uses that exact pinned N
    package to have an HTTPS `registry.npmjs.org` tarball URL matching its exact package/version,
    SHA-512 integrity, package metadata, and a direct license file.
    For the SDK specifically, the consumer release gate also downloads the exact registry tarball
-   selected by the lockfile, recomputes its SHA-512 bytes, and requires the published package
-   metadata `gitHead` to equal the checked annotated SDK tag commit. That final binding remains
-   deliberately deferred until the SDK 0.5 artifact and its release-workflow evidence exist.
+   selected by the lockfile, recomputes its SHA-512 bytes, runs `npm audit signatures`, and invokes
+   the exact SDK release's bounded npm/SLSA provenance verifier. That verifier binds the package,
+   archive, workflow tag, hosted builder, and resolved SDK commit; the legacy npm `gitHead` field is
+   not a release authority.
 5. Only after all checks pass, the publish job downloads the tested archive and revalidates the exact
    remote annotated tag object, peeled commit, tag ref, and authoritative current `main` tip immediately before
    every Release mutation. Git and GitHub transport configuration is isolated to canonical HTTPS
@@ -55,7 +56,7 @@ is Linux with Node.js `>=22.23.2`; release verification uses that exact pinned N
 Never replace, delete, or rebuild a release archive. A correction requires a new source commit,
 new semver version, and a fresh annotated `storage-cli-v*` tag.
 
-No release is currently eligible: the release gate requires the exact published, immutable
-`@telecrypt-io/storage` `0.5.0` / `matrix-js-sdk` `42.2.0` binding, while the manifest and lockfile
-remain on their available exact releases. Do not manufacture dependency metadata or claim release
-readiness while those exact registry and Release identities are unavailable.
+No CLI release is currently eligible from an uncommitted checkout: hosted verification still has to
+run against the exact published, immutable `@telecrypt-io/storage` `0.5.10` /
+`matrix-js-sdk` `42.2.0` binding and a fresh immutable CLI release. The manifest and lockfile select
+those exact versions; do not claim release readiness until every required hosted check passes.

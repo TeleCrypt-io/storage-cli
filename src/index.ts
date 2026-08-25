@@ -611,7 +611,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     }
   } finally {
     removeCancellationHandlers();
-    scheduleBoundedNormalExit(process.exitCode ?? 0);
+    scheduleBoundedNormalExit(typeof process.exitCode === "number" ? process.exitCode : 0);
   }
 }
 

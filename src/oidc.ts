@@ -362,8 +362,9 @@ export function validateOidcMetadata(metadata: OidcClientConfig, homeserver: str
   for (const [name, endpoint] of endpoints) {
     assertOidcEndpoint(endpoint, homeserver, name, issuer);
   }
-  if (metadata.jwks_uri !== undefined) {
-    assertOidcEndpoint(metadata.jwks_uri, homeserver, "OIDC JWKS endpoint", issuer);
+  const metadataWithOptionalJwks = metadata as OidcClientConfig & { jwks_uri?: unknown };
+  if (metadataWithOptionalJwks.jwks_uri !== undefined) {
+    assertOidcEndpoint(metadataWithOptionalJwks.jwks_uri, homeserver, "OIDC JWKS endpoint", issuer);
   }
   return metadata;
 }

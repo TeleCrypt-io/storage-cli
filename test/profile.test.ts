@@ -224,7 +224,7 @@ describe("secret-bearing CLI profile state", () => {
     const moduleUrl = pathToFileURL(path.resolve("src/profile.ts")).href;
     const child = spawn(
       process.execPath,
-      ["--experimental-strip-types", "--input-type=module", "-e", `import { acquireProfileLock } from ${JSON.stringify(moduleUrl)}; const lock = acquireProfileLock(${JSON.stringify(dir)}); process.stdout.write("locked\\n"); setTimeout(() => {}, 5000);`],
+      ["--import", "tsx/esm", "--input-type=module", "-e", `import { acquireProfileLock } from ${JSON.stringify(moduleUrl)}; const lock = acquireProfileLock(${JSON.stringify(dir)}); process.stdout.write("locked\\n"); setTimeout(() => {}, 5000);`],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     try {

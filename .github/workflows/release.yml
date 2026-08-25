@@ -34,7 +34,7 @@ env:
   HTTPS_PROXY: ""
   ALL_PROXY: ""
   GH_HOST: github.com
-  SDK_REF: v0.5.0
+  SDK_REF: v0.5.10
 
 jobs:
   build:
@@ -130,10 +130,10 @@ jobs:
         run: |
           set -euo pipefail
           sdk_version="${SDK_REF#v}"
-          # Keep the current release deliberately blocked while the manifest
-          # still selects the available SDK. Once the exact SDK 0.5 artifact
-          # is published, this downloads the registry bytes selected by the
-          # lockfile and binds their npm gitHead to the checked tag commit.
+          # Download the exact accepted SDK release selected by the lockfile.
+          # The SDK checkout below remains the authority for npm/SLSA
+          # provenance; this local check binds the downloaded bytes to our
+          # lockfile before that provenance check runs.
           selected_version="$(node -p 'require("./package.json").dependencies["@telecrypt-io/storage"]')"
           if test "$selected_version" != "$sdk_version"; then
             echo "SDK registry-byte verification requires the manifest to select $sdk_version; current selection is $selected_version" >&2
@@ -146,7 +146,93 @@ jobs:
           sdk_archive="$(find "$RUNNER_TEMP/storage-sdk-package" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$sdk_archive"
           sdk_tag_commit="$(awk -F= '$1 == "tag_commit" { print $2 }' release/sdk-source-identity.txt)"
-          node scripts/verifySdkPackage.mjs "$sdk_archive" package-lock.json "$sdk_tag_commit" "$sdk_version"
+          node scripts/verifySdkPackage.mjs "$sdk_archive" package-lock.json "$sdk_version"
+
+          provenance_dir="$RUNNER_TEMP/storage-sdk-provenance"
+          mkdir -m 700 "$provenance_dir"
+          bounded() {
+            local stdout_path="$1" stderr_path="$2"
+            shift 2
+            : > "$stdout_path"
+            : > "$stderr_path"
+            python3 scripts/bounded-command.py \
+              --stdout-limit 131072 --stderr-limit 131072 \
+              --stdout-path "$stdout_path" --stderr-path "$stderr_path" \
+              --timeout 120 -- "$@"
+          }
+          retry_registry() {
+            local stdout_path="$1" stderr_path="$2" status attempt
+            shift 2
+            for attempt in $(seq 1 12); do
+              set +e
+              bounded "$stdout_path" "$stderr_path" "$@"
+              status="$?"
+              set -e
+              if test "$status" = 0 && test ! -s "$stderr_path"; then
+                return 0
+              fi
+              if test "$attempt" = 12; then
+                cat "$stdout_path" >&2
+                cat "$stderr_path" >&2
+                if test "$status" = 0; then
+                  return 1
+                fi
+                return "$status"
+              fi
+              sleep 10
+            done
+          }
+          dist="$provenance_dir/dist.json"
+          dist_err="$provenance_dir/dist.err"
+          retry_registry "$dist" "$dist_err" npm view \
+            "@telecrypt-io/storage@$sdk_version" dist --json --loglevel=error
+          if grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$dist" "$dist_err"; then
+            exit 1
+          fi
+          attestations_url="$(node - "$dist" "$sdk_version" <<'NODE'
+          const fs = require("node:fs");
+          const dist = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const version = process.argv[3];
+          const expected = `https://registry.npmjs.org/-/npm/v1/attestations/@telecrypt-io%2fstorage@${version}`;
+          let parsed;
+          try { parsed = new URL(dist?.attestations?.url); } catch { process.exit(1); }
+          if (dist.attestations.url !== expected || parsed.protocol !== "https:" || parsed.hostname !== "registry.npmjs.org" || parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash) process.exit(1);
+          process.stdout.write(dist.attestations.url);
+          NODE
+          )"
+          attestations="$provenance_dir/attestations.json"
+          attestations_err="$provenance_dir/attestations.err"
+          retry_registry "$attestations" "$attestations_err" curl --proto '=https' --tlsv1.2 \
+            --silent --show-error --fail-with-body --max-time 120 --connect-timeout 20 "$attestations_url"
+          if grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$attestations" "$attestations_err"; then
+            exit 1
+          fi
+
+          # Cryptographic npm/Sigstore verification must precede the
+          # first-party structural binding of the verified attestation data.
+          audit="$provenance_dir/audit"
+          mkdir -m 700 "$audit"
+          printf '%s\n' '{"name":"storage-cli-sdk-signature-check","private":true,"dependencies":{"@telecrypt-io/storage":"'"$sdk_version"'"}}' > "$audit/package.json"
+          audit_install_out="$provenance_dir/audit-install.out"
+          audit_install_err="$provenance_dir/audit-install.err"
+          bounded "$audit_install_out" "$audit_install_err" bash -c 'cd "$1" && npm install --ignore-scripts --no-fund --no-audit --loglevel=error' bash "$audit"
+          test ! -s "$audit_install_err"
+          if grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$audit_install_out" "$audit_install_err"; then
+            exit 1
+          fi
+          audit_out="$provenance_dir/audit.out"
+          audit_err="$provenance_dir/audit.err"
+          bounded "$audit_out" "$audit_err" bash -c 'cd "$1" && npm audit signatures --loglevel=error' bash "$audit"
+          test ! -s "$audit_err" -a -s "$audit_out"
+          grep -Eqi 'verified attestations?' "$audit_out"
+
+          provenance_out="$provenance_dir/provenance.out"
+          provenance_err="$provenance_dir/provenance.err"
+          bounded "$provenance_out" "$provenance_err" node storage-sdk/scripts/verify-npm-provenance.mjs \
+            --dist "$dist" --attestations "$attestations" --archive "$sdk_archive" \
+            --package '@telecrypt-io/storage' --version "$sdk_version" --tag "$SDK_REF" --commit "$sdk_tag_commit"
+          test ! -s "$provenance_err" -a -s "$provenance_out"
+          grep -Fq 'verified npm provenance' "$provenance_out"
 
       - name: Require exact package and lockfile versions
         run: |
@@ -155,7 +241,7 @@ jobs:
           import fs from "node:fs";
 
           const expected = {
-            "@telecrypt-io/storage": "0.5.0",
+            "@telecrypt-io/storage": "0.5.10",
             "matrix-js-sdk": "42.2.0",
           };
           const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));

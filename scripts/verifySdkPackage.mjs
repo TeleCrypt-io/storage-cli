@@ -3,10 +3,9 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 const PACKAGE_NAME = "@telecrypt-io/storage";
-const MAX_TARBALL_BYTES = 256 * 1024 * 1024;
-const MAX_PACKAGE_JSON_BYTES = 1 * 1024 * 1024;
+const MAX_TARBALL_BYTES = 128 * 1024 * 1024;
+const MAX_PACKAGE_JSON_BYTES = 131_072;
 const SRI_SHA512 = /^sha512-[A-Za-z0-9+/]{86}==$/u;
-const COMMIT = /^(?!0{40}$)[0-9a-f]{40}$/u;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u;
 
 function exactRegistryUrl(name, version) {
@@ -15,15 +14,15 @@ function exactRegistryUrl(name, version) {
 }
 
 /**
- * Verifies the consumer-side SDK contract: the exact registry tarball bytes
- * selected by package-lock must carry SHA-512 integrity, and its published
- * package metadata must identify the checked annotated SDK commit. npm writes
- * gitHead for a package published from a Git checkout; requiring it here
- * prevents a same-version registry artifact from being silently substituted.
+ * Verifies the consumer-side registry-byte contract. The exact SDK release's
+ * own provenance verifier is the authority for the release commit binding;
+ * this small consumer-side check only binds the downloaded bytes and package
+ * identity to this lockfile. npm's legacy `gitHead` field is intentionally not
+ * used because it is neither present nor authoritative for the accepted npm
+ * provenance publication.
  */
-export function verifySdkPackageBinding(tarballPath, lock, expectedTagCommit, expectedVersion) {
+export function verifySdkPackageBinding(tarballPath, lock, expectedVersion) {
   if (typeof tarballPath !== "string" || tarballPath.length === 0) throw new Error("SDK tarball path is required");
-  if (!COMMIT.test(expectedTagCommit ?? "")) throw new Error("SDK tag commit is not a full commit ID");
   if (typeof expectedVersion !== "string" || !EXACT_SEMVER.test(expectedVersion)) {
     throw new Error("SDK package version is not exact semver");
   }
@@ -60,18 +59,17 @@ export function verifySdkPackageBinding(tarballPath, lock, expectedTagCommit, ex
   if (
     !packageJson ||
     packageJson.name !== PACKAGE_NAME ||
-    packageJson.version !== expectedVersion ||
-    packageJson.gitHead !== expectedTagCommit
+    packageJson.version !== expectedVersion
   ) {
-    throw new Error("SDK registry package is not bound to the checked annotated tag commit");
+    throw new Error("SDK registry package identity is not exact");
   }
   return true;
 }
 
 if (process.argv[1] && new URL(`file://${process.argv[1]}`).href === import.meta.url) {
-  const [tarballPath, lockPath, tagCommit, version] = process.argv.slice(2);
-  if (!tarballPath || !lockPath || !tagCommit || !version) {
-    throw new Error("usage: verifySdkPackage.mjs SDK_TARBALL PACKAGE_LOCK SDK_TAG_COMMIT VERSION");
+  const [tarballPath, lockPath, version] = process.argv.slice(2);
+  if (!tarballPath || !lockPath || !version) {
+    throw new Error("usage: verifySdkPackage.mjs SDK_TARBALL PACKAGE_LOCK VERSION");
   }
-  verifySdkPackageBinding(tarballPath, JSON.parse(fs.readFileSync(lockPath, "utf8")), tagCommit, version);
+  verifySdkPackageBinding(tarballPath, JSON.parse(fs.readFileSync(lockPath, "utf8")), version);
 }

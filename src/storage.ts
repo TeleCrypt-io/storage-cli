@@ -18,23 +18,6 @@ import { buildTokenRefreshFunction, StorageError } from "@telecrypt-io/storage/c
 import { assertOidcEndpoint, assertTrustedHomeserver } from "./oidc.js";
 import { commandSignal, settlePromiseWithin } from "./cancellation.js";
 
-// The checked-in checkout may still have SDK 0.4 declarations; the exact SDK
-// source used for the next release requires the trusted Matrix server name.
-type CreateFromOidcWithServerName = {
-  [key: string]: unknown;
-  baseUrl: string;
-  serverName: string;
-  userId: string;
-  accessToken: string;
-  deviceId: string;
-  refreshToken?: string;
-  tokenRefreshFunction?: unknown;
-  signal?: AbortSignal;
-};
-const createFromOidcWithServerName = TeleCryptIOStorage.createFromOidc as unknown as (
-  options: CreateFromOidcWithServerName,
-) => Promise<TeleCryptIOStorage>;
-
 const CRYPTO_SNAPSHOT_TIMEOUT_MS = 30_000;
 const STORAGE_OPEN_TIMEOUT_MS = 30_000;
 export const STORAGE_OPERATION_TIMEOUT_MS = 120_000;
@@ -270,32 +253,18 @@ async function buildStorageForSession(
       currentSession = withRefreshedTokens(currentSession, tokens);
       writeSessionUnlocked(currentSession, dir, lock);
   };
-  // SDK 0.5 binds refresh credentials to the discovered issuer metadata and
-  // expected Matrix device. Keep the current exact SDK 0.4 lock usable until
-  // that release is published: its legacy three-argument builder remains the
-  // runtime fallback, while the 0.5 shape is selected by its arity.
-  const sdkBuilder = buildTokenRefreshFunction as unknown as {
-    length: number;
-    (config: {
-      issuer: string;
-      token_endpoint: string;
-      revocation_endpoint?: string;
-    }, clientId: string, onPersist: typeof persistRefreshedTokens, expectedDeviceId: string): ReturnType<typeof buildTokenRefreshFunction>;
-  };
-  const tokenRefreshFunction = sdkBuilder.length >= 4
-    ? sdkBuilder(
-        {
-          issuer: issuer.toString(),
-          token_endpoint: tokenEndpoint,
-          ...(revocationEndpoint === undefined ? {} : { revocation_endpoint: revocationEndpoint }),
-        },
-        session.oidcClientId,
-        persistRefreshedTokens,
-        session.deviceId,
-      )
-    : buildTokenRefreshFunction(tokenEndpoint, session.oidcClientId, persistRefreshedTokens);
+  const tokenRefreshFunction = buildTokenRefreshFunction(
+    {
+      issuer: issuer.toString(),
+      token_endpoint: tokenEndpoint,
+      ...(revocationEndpoint === undefined ? {} : { revocation_endpoint: revocationEndpoint }),
+    },
+    session.oidcClientId,
+    persistRefreshedTokens,
+    session.deviceId,
+  );
 
-  return createFromOidcWithServerName({
+  return TeleCryptIOStorage.createFromOidc({
     baseUrl: trustedHomeserver,
     serverName: session.matrixServerName,
     userId: session.userId,
