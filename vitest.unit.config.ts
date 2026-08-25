@@ -19,6 +19,7 @@ export default defineConfig({
       "test/waitFor.test.ts",
       "test/recoveryInput.test.ts",
       "test/indexRuntime.test.ts",
+      "test/deletion.test.ts",
     ],
   },
 });
