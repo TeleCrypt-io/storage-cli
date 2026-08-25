@@ -8,6 +8,23 @@ const MAX_PACKAGE_JSON_BYTES = 131_072;
 const SRI_SHA512 = /^sha512-[A-Za-z0-9+/]{86}==$/u;
 const EXACT_SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u;
 
+function readBoundedJson(path, label) {
+  let stat;
+  try {
+    stat = fs.statSync(path);
+  } catch (error) {
+    throw new Error(`${label} cannot be read: ${error.message}`);
+  }
+  if (!stat.isFile() || stat.size > MAX_PACKAGE_JSON_BYTES) {
+    throw new Error(`${label} exceeds the bounded JSON input`);
+  }
+  try {
+    return JSON.parse(fs.readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`${label} is not valid JSON: ${error.message}`);
+  }
+}
+
 function exactRegistryUrl(name, version) {
   const tarballName = name.slice(name.indexOf("/") + 1);
   return `https://registry.npmjs.org/${name}/-/${tarballName}-${version}.tgz`;
@@ -71,5 +88,5 @@ if (process.argv[1] && new URL(`file://${process.argv[1]}`).href === import.meta
   if (!tarballPath || !lockPath || !version) {
     throw new Error("usage: verifySdkPackage.mjs SDK_TARBALL PACKAGE_LOCK VERSION");
   }
-  verifySdkPackageBinding(tarballPath, JSON.parse(fs.readFileSync(lockPath, "utf8")), version);
+  verifySdkPackageBinding(tarballPath, readBoundedJson(lockPath, "package lockfile"), version);
 }

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   classifyExistingDraft,
   isConfirmedNotFound,
@@ -180,11 +181,31 @@ test("the SDK consumer contract rejects malformed package, lock, bytes, and vers
   }
 });
 
+test("the SDK CLI verifier bounds its lockfile input", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sdk-binding-lock-bound-"));
+  try {
+    const lockPath = path.join(directory, "package-lock.json");
+    fs.writeFileSync(lockPath, `${JSON.stringify({ packages: {} })}${"x".repeat(131_072)}`);
+    assert.throws(
+      () => execFileSync(process.execPath, [
+        fileURLToPath(new URL("../scripts/verifySdkPackage.mjs", import.meta.url)),
+        "/unavailable/sdk.tgz",
+        lockPath,
+        "0.5.10",
+      ], { encoding: "utf8", stdio: "pipe" }),
+      /bounded JSON input/u,
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("the release workflow performs npm signature verification before SDK provenance binding", () => {
   const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const audit = workflow.indexOf("npm audit signatures");
+  const consumer = workflow.indexOf("scripts/verifySdkPackage.mjs");
   const provenance = workflow.indexOf("storage-sdk/scripts/verify-npm-provenance.mjs");
-  assert.ok(audit >= 0 && provenance >= 0 && audit < provenance);
+  assert.ok(audit >= 0 && consumer >= 0 && provenance >= 0 && audit < consumer && consumer < provenance);
   assert.doesNotMatch(workflow, /gitHead/u);
   assert.match(workflow, /SDK_REF: v0\.5\.10/u);
   assert.match(workflow, /if test "\$status" = 0; then\s+return 1\s+fi\s+return "\$status"/u);

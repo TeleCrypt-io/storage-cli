@@ -145,8 +145,6 @@ jobs:
             "@telecrypt-io/storage@$sdk_version" > "$RUNNER_TEMP/storage-sdk-pack.txt"
           sdk_archive="$(find "$RUNNER_TEMP/storage-sdk-package" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$sdk_archive"
-          sdk_tag_commit="$(awk -F= '$1 == "tag_commit" { print $2 }' release/sdk-source-identity.txt)"
-          node scripts/verifySdkPackage.mjs "$sdk_archive" package-lock.json "$sdk_version"
 
           provenance_dir="$RUNNER_TEMP/storage-sdk-provenance"
           mkdir -m 700 "$provenance_dir"
@@ -226,6 +224,11 @@ jobs:
           test ! -s "$audit_err" -a -s "$audit_out"
           grep -Eqi 'verified attestations?' "$audit_out"
 
+          # Bind the audited registry bytes to this consumer's exact lock entry.
+          # The SDK checkout remains the sole authority for npm/SLSA provenance.
+          node scripts/verifySdkPackage.mjs "$sdk_archive" package-lock.json "$sdk_version"
+
+          sdk_tag_commit="$(awk -F= '$1 == "tag_commit" { print $2 }' release/sdk-source-identity.txt)"
           provenance_out="$provenance_dir/provenance.out"
           provenance_err="$provenance_dir/provenance.err"
           bounded "$provenance_out" "$provenance_err" node storage-sdk/scripts/verify-npm-provenance.mjs \
