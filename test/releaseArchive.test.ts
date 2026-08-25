@@ -74,10 +74,23 @@ describe("release source and archive invariants", () => {
     expect(() => validateArchiveEntries(archiveFor(), alternatePort)).toThrow(/registry provenance/u);
   });
 
+  it("accepts the exact license filename variants used by bundled registry packages", () => {
+    for (const filename of ["license", "LICENSE.md", "LICENSE-MIT"]) {
+      const inventory = validateArchiveEntries(
+        archiveFor([`package/node_modules/dep/${filename}`, "package/node_modules/dep/package.json"]),
+        lock(),
+      );
+      expect(inventory).toBe(`dep\t1.0.0\tMIT\tpackage/node_modules/dep/${filename}\n`);
+    }
+  });
+
   it("accepts only exact, regular, bounded, non-empty license members", () => {
     expect(validateLicenseContent("LICENSE", Buffer.from("MIT\n"))).toBe(true);
     expect(validateLicenseContent("LICENCE", Buffer.from("MIT\n"))).toBe(true);
     expect(validateLicenseContent("COPYING", Buffer.from("MIT\n"))).toBe(true);
+    expect(validateLicenseContent("license", Buffer.from("MIT\n"))).toBe(true);
+    expect(validateLicenseContent("LICENSE.md", Buffer.from("MIT\n"))).toBe(true);
+    expect(validateLicenseContent("LICENSE-MIT", Buffer.from("MIT\n"))).toBe(true);
     expect(() => validateLicenseContent("LICENSE.txt", Buffer.from("MIT\n"))).toThrow(/unsupported/u);
     expect(() => validateLicenseContent("LICENSE", Buffer.alloc(0))).toThrow(/size/u);
     expect(() => validateLicenseContent("LICENSE", Buffer.alloc(1_048_577))).toThrow(/size/u);

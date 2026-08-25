@@ -26,7 +26,14 @@ const REQUIRED_DIST_FILES = [
   "package/dist/topology.d.ts", "package/dist/topology.js",
 ];
 
-const SUPPORTED_LICENSE_NAMES = new Set(["LICENSE", "LICENCE", "COPYING"]);
+const SUPPORTED_LICENSE_NAMES = new Set([
+  "LICENSE",
+  "LICENCE",
+  "COPYING",
+  "license",
+  "LICENSE.md",
+  "LICENSE-MIT",
+]);
 const MAX_ARCHIVE_ENTRIES = 100_000;
 const MAX_ARCHIVE_PATH_BYTES = 4096;
 const MAX_INVENTORY_BYTES = 1_048_576;
