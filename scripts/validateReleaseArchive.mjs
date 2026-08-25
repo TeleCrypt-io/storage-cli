@@ -14,6 +14,7 @@ const REQUIRED_DIST_FILES = [
   "package/dist/cryptoSnapshot.d.ts", "package/dist/cryptoSnapshot.js",
   "package/dist/fileTransfer.d.ts", "package/dist/fileTransfer.js",
   "package/dist/index.d.ts", "package/dist/index.js",
+  "package/dist/limits.d.ts", "package/dist/limits.js",
   "package/dist/loginTransaction.d.ts", "package/dist/loginTransaction.js",
   "package/dist/logout.d.ts", "package/dist/logout.js",
   "package/dist/oidc.d.ts", "package/dist/oidc.js",
@@ -22,6 +23,7 @@ const REQUIRED_DIST_FILES = [
   "package/dist/profile.d.ts", "package/dist/profile.js",
   "package/dist/recoveryInput.d.ts", "package/dist/recoveryInput.js",
   "package/dist/storage.d.ts", "package/dist/storage.js",
+  "package/dist/topology.d.ts", "package/dist/topology.js",
 ];
 
 const SUPPORTED_LICENSE_NAMES = new Set(["LICENSE", "LICENCE", "COPYING"]);
