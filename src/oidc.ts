@@ -25,6 +25,16 @@ import {
 import { settlePromiseWithin } from "./cancellation.js";
 import { expectedMatrixServerName, isExactLoopbackHost } from "./topology.js";
 
+// Keep the source checkout usable with the locally installed pre-0.5 SDK while
+// the published SDK gains the explicit topology argument. The cast changes no
+// runtime behavior; the exact release's declaration is the authoritative type.
+const whoAmIWithServerName = whoAmI as unknown as (
+  homeserver: string,
+  accessToken: string,
+  serverName: string,
+  signal?: AbortSignal,
+) => Promise<Awaited<ReturnType<typeof whoAmI>>>;
+
 /** Carries the exact bearer credentials that must be revoked when a device
  * grant succeeded but the CLI could not finish identity verification or
  * persistence. The message remains safe for user-facing output. */
@@ -574,7 +584,7 @@ export async function runDeviceCodeLogin(
 
   try {
     const who = await withDeadline(
-      (requestSignal) => whoAmI(trustedHomeserver, accessToken, requestSignal),
+      (requestSignal) => whoAmIWithServerName(trustedHomeserver, accessToken, trustedMatrixServerName, requestSignal),
       "OIDC identity verification",
       OIDC_REQUEST_TIMEOUT_MS,
       signal,

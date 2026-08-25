@@ -21,8 +21,8 @@ vi.mock("@telecrypt-io/storage/core", async (importOriginal) => {
 
 const HOMESERVER = "https://backend.telecrypt.io";
 
-function metadata(overrides: Partial<OidcClientConfig> = {}): OidcClientConfig {
-  const issuer = "https://backend.telecrypt.io/auth/";
+function metadataFor(homeserver: string, overrides: Partial<OidcClientConfig> = {}): OidcClientConfig {
+  const issuer = `${homeserver}/auth/`;
   return {
     issuer,
     authorization_endpoint: `${issuer}authorize`,
@@ -36,6 +36,10 @@ function metadata(overrides: Partial<OidcClientConfig> = {}): OidcClientConfig {
     code_challenge_methods_supported: ["S256"],
     ...overrides,
   };
+}
+
+function metadata(overrides: Partial<OidcClientConfig> = {}): OidcClientConfig {
+  return metadataFor(HOMESERVER, overrides);
 }
 
 describe("CLI OIDC endpoint validation", () => {
@@ -687,6 +691,44 @@ describe("CLI OIDC endpoint validation", () => {
       verificationUriComplete: "https://backend.telecrypt.io/auth/device?user_code=ABC-123",
       userCode: "ABC-123",
     });
+    expect(core.whoAmI).toHaveBeenCalledWith(
+      HOMESERVER,
+      "access-token",
+      "telecrypt.io",
+      expect.anything(),
+    );
+  });
+
+  it("passes the stage Matrix server name independently of the backend hostname", async () => {
+    const stageHomeserver = "https://backend.stage.telecrypt.io";
+    const stageMetadata = metadataFor(stageHomeserver);
+    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(stageMetadata);
+    vi.mocked(core.registerClient).mockResolvedValue("client-id");
+    vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
+      device_code: "device-code",
+      user_code: "ABC-123",
+      verification_uri: `${stageHomeserver}/auth/device`,
+      expires_in: 600,
+      interval: 1,
+    });
+    vi.mocked(core.waitForDeviceCodeLogin).mockResolvedValue({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      token_type: "Bearer",
+    });
+    vi.mocked(core.whoAmI).mockImplementation(async () => ({
+      userId: "@alice:stage.telecrypt.io",
+      deviceId: vi.mocked(core.startDeviceCodeLogin).mock.calls.at(-1)?.[2] ?? null,
+    }));
+
+    await runDeviceCodeLogin(stageHomeserver, { onVerification: vi.fn(), openBrowser: false });
+
+    expect(core.whoAmI).toHaveBeenCalledWith(
+      stageHomeserver,
+      "access-token",
+      "stage.telecrypt.io",
+      expect.anything(),
+    );
   });
 
   it("rejects a valid canonical MXID from a server outside the trusted TeleCrypt topology", async () => {

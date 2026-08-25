@@ -18,6 +18,23 @@ import { buildTokenRefreshFunction, StorageError } from "@telecrypt-io/storage/c
 import { assertOidcEndpoint, assertTrustedHomeserver } from "./oidc.js";
 import { commandSignal, settlePromiseWithin } from "./cancellation.js";
 
+// The checked-in checkout may still have SDK 0.4 declarations; the exact SDK
+// source used for the next release requires the trusted Matrix server name.
+type CreateFromOidcWithServerName = {
+  [key: string]: unknown;
+  baseUrl: string;
+  serverName: string;
+  userId: string;
+  accessToken: string;
+  deviceId: string;
+  refreshToken?: string;
+  tokenRefreshFunction?: unknown;
+  signal?: AbortSignal;
+};
+const createFromOidcWithServerName = TeleCryptIOStorage.createFromOidc as unknown as (
+  options: CreateFromOidcWithServerName,
+) => Promise<TeleCryptIOStorage>;
+
 const CRYPTO_SNAPSHOT_TIMEOUT_MS = 30_000;
 const STORAGE_OPEN_TIMEOUT_MS = 30_000;
 export const STORAGE_OPERATION_TIMEOUT_MS = 120_000;
@@ -278,8 +295,9 @@ async function buildStorageForSession(
       )
     : buildTokenRefreshFunction(tokenEndpoint, session.oidcClientId, persistRefreshedTokens);
 
-  return TeleCryptIOStorage.createFromOidc({
+  return createFromOidcWithServerName({
     baseUrl: trustedHomeserver,
+    serverName: session.matrixServerName,
     userId: session.userId,
     accessToken: session.accessToken,
     deviceId: session.deviceId,
