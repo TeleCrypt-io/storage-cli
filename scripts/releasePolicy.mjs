@@ -1,4 +1,5 @@
 const MAX_IDENTITY_BYTES = 64 * 1024;
+const MAX_RELEASE_LIST_BYTES = 1_048_576;
 const COMMIT = /^(?!0{40}$)[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 
@@ -54,6 +55,56 @@ export function isConfirmedNotFound(status, stderr) {
   if (status !== 1 || typeof stderr !== "string" || Buffer.byteLength(stderr, "utf8") > MAX_IDENTITY_BYTES) return false;
   const lines = stderr.trim().split(/\r?\n/u).filter(Boolean);
   return lines.length === 1 && /^gh:\s+.+\(HTTP 404\)$/u.test(lines[0]);
+}
+
+function validateReleaseListEntry(release, seenIds) {
+  if (!release || typeof release !== "object" || Array.isArray(release) ||
+      !Number.isSafeInteger(release.id) || release.id < 1 || typeof release.tag_name !== "string" || release.tag_name === "") {
+    throw new Error("GitHub Release list entry is invalid");
+  }
+  if (seenIds.has(release.id)) throw new Error("duplicate GitHub Release ID");
+  seenIds.add(release.id);
+  return release;
+}
+
+export function parseReleaseList(text) {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > MAX_RELEASE_LIST_BYTES) {
+    throw new Error("GitHub Release list is missing or exceeds the bounded length");
+  }
+  if (text === "") return [];
+  if (!text.endsWith("\n")) throw new Error("GitHub Release list pagination is incomplete");
+  const lines = text.split(/\r?\n/u);
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0 || lines.some((line) => line === "")) throw new Error("GitHub Release list pagination is incomplete");
+  const seenIds = new Set();
+  return lines.map((line) => {
+    let encoded;
+    try {
+      encoded = JSON.parse(line);
+    } catch {
+      throw new Error("GitHub Release list pagination is incomplete");
+    }
+    let release = encoded;
+    if (typeof encoded === "string") {
+      try {
+        release = JSON.parse(encoded);
+      } catch {
+        throw new Error("GitHub Release list pagination is incomplete");
+      }
+    }
+    return validateReleaseListEntry(release, seenIds);
+  });
+}
+
+export function findReleaseByTag(releases, tag) {
+  if (!Array.isArray(releases) || typeof tag !== "string" || tag === "") {
+    throw new Error("release list or tag is invalid");
+  }
+  const seenIds = new Set();
+  const entries = releases.map((release) => validateReleaseListEntry(release, seenIds));
+  const matches = entries.filter((release) => release.tag_name === tag);
+  if (matches.length > 1) throw new Error("multiple Releases match the expected tag");
+  return matches[0] ?? null;
 }
 
 function validateReleaseShape(release, expected) {

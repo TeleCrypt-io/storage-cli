@@ -213,6 +213,7 @@ jobs:
           printf '%s\n' '{"name":"storage-cli-sdk-signature-check","private":true,"dependencies":{"@telecrypt-io/storage":"'"$sdk_version"'"}}' > "$audit/package.json"
           audit_install_out="$provenance_dir/audit-install.out"
           audit_install_err="$provenance_dir/audit-install.err"
+          # shellcheck disable=SC2016
           bounded "$audit_install_out" "$audit_install_err" bash -c 'cd "$1" && npm install --ignore-scripts --no-fund --no-audit --loglevel=error' bash "$audit"
           test ! -s "$audit_install_err"
           if grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$audit_install_out" "$audit_install_err"; then
@@ -220,6 +221,7 @@ jobs:
           fi
           audit_out="$provenance_dir/audit.out"
           audit_err="$provenance_dir/audit.err"
+          # shellcheck disable=SC2016
           bounded "$audit_out" "$audit_err" bash -c 'cd "$1" && npm audit signatures --loglevel=error' bash "$audit"
           test ! -s "$audit_err" -a -s "$audit_out"
           grep -Eqi 'verified attestations?' "$audit_out"
@@ -522,41 +524,56 @@ jobs:
           if (packageJson.version !== expected) throw new Error("archive package version is not bound to its release tag");
           NODE
 
-          release_endpoint="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
+          release_endpoint="repos/$GITHUB_REPOSITORY/releases"
           release_json="$RUNNER_TEMP/storage-cli-release.json"
-          release_error="$RUNNER_TEMP/storage-cli-release-error.txt"
-          release_state="missing"
-          if bounded_gh "$release_json" "$release_error" api --hostname github.com \
-            --header "X-GitHub-Api-Version: 2026-03-10" "$release_endpoint"; then
-            release_state="$(node --input-type=module - "$release_json" "$archive" <<'NODE'
+          release_list_json="$RUNNER_TEMP/storage-cli-release-list.json"
+          release_list_error="$RUNNER_TEMP/storage-cli-release-list-error.txt"
+          fetch_release_state() {
+            bounded_gh "$release_list_json" "$release_list_error" \
+              api --paginate --jq '.[] | @json' --hostname github.com \
+              --header "X-GitHub-Api-Version: 2026-03-10" "${release_endpoint}?per_page=100"
+            test ! -s "$release_list_error"
+            node --input-type=module - "$release_list_json" "$release_json" "$archive" <<'NODE'
           import fs from "node:fs";
           import { createHash } from "node:crypto";
-          import { classifyExistingDraft } from "./scripts/releasePolicy.mjs";
-          const [releasePath, archivePath] = process.argv.slice(2);
-          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
-          const expectedTag = process.env.GITHUB_REF_NAME;
-          const digest = `sha256:${createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex")}`;
-          process.stdout.write(classifyExistingDraft(release, {
-            tag: expectedTag,
-            archiveName: `${expectedTag}.tgz`,
-            size: fs.statSync(archivePath).size,
-            digest,
-          }));
+          import { classifyExistingDraft, findReleaseByTag, parseReleaseList } from "./scripts/releasePolicy.mjs";
+          const [listPath, releasePath, archivePath] = process.argv.slice(2);
+          const releases = parseReleaseList(fs.readFileSync(listPath, "utf8"));
+          const release = findReleaseByTag(releases, process.env.GITHUB_REF_NAME);
+          fs.rmSync(releasePath, { force: true });
+          if (release === null) {
+            process.stdout.write("missing");
+          } else {
+            const expectedTag = process.env.GITHUB_REF_NAME;
+            const digest = `sha256:${createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex")}`;
+            fs.writeFileSync(releasePath, JSON.stringify(release), { encoding: "utf8", mode: 0o600 });
+            process.stdout.write(classifyExistingDraft(release, {
+              tag: expectedTag,
+              archiveName: `${expectedTag}.tgz`,
+              size: fs.statSync(archivePath).size,
+              digest,
+            }));
+          }
+          NODE
+          }
+          set_release_resource_endpoint() {
+            release_id="$(node --input-type=module - "$release_json" <<'NODE'
+          import fs from "node:fs";
+          const release = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (!Number.isSafeInteger(release.id) || release.id < 1) throw new Error("GitHub Release ID is invalid");
+          process.stdout.write(String(release.id));
           NODE
             )"
-          else
-            release_status=$?
-            if [ "$release_status" -ne 1 ] || ! node --input-type=module - "$release_status" "$release_error" <<'NODE'
-          import fs from "node:fs";
-          import { isConfirmedNotFound } from "./scripts/releasePolicy.mjs";
-          const [status, errorPath] = process.argv.slice(2);
-          if (!isConfirmedNotFound(Number(status), fs.readFileSync(errorPath, "utf8"))) process.exit(1);
-          NODE
-            then
-              cat "$release_error" >&2
-              echo "cannot prove whether the GitHub Release exists" >&2
-              exit 1
-            fi
+            release_resource_endpoint="${release_endpoint}/${release_id}"
+          }
+          release_state="missing"
+          if ! release_state="$(fetch_release_state)"; then
+            cat "$release_list_error" >&2
+            echo "cannot prove whether the GitHub Release exists" >&2
+            exit 1
+          fi
+          if [ "$release_state" != "missing" ]; then
+            set_release_resource_endpoint
           fi
 
           # Do not create or attach an asset until the live remote identity is
@@ -571,18 +588,37 @@ jobs:
               --title "$GITHUB_REF_NAME" \
               --generate-notes
             release_state="draft-empty"
+            if ! release_state="$(fetch_release_state)"; then
+              cat "$release_list_error" >&2
+              echo "cannot prove whether the newly created GitHub Release exists" >&2
+              exit 1
+            fi
+            if [ "$release_state" != "draft-empty" ] && [ "$release_state" != "draft-exact" ]; then
+              echo "unexpected Release state after creation: $release_state" >&2
+              exit 1
+            fi
+            set_release_resource_endpoint
           fi
           if [ "$release_state" = "draft-empty" ]; then
             verify_mutation_boundary
+            archive_name="${archive##*/}"
             bounded_gh "$RUNNER_TEMP/storage-cli-release-upload.out" "$RUNNER_TEMP/storage-cli-release-upload.err" \
-              release upload "$GITHUB_REF_NAME" "$archive" --repo "github.com/$GITHUB_REPOSITORY"
+              api --method POST \
+              --header "Content-Type: application/gzip" \
+              --input "$archive" "https://uploads.github.com/${release_resource_endpoint}/assets?name=${archive_name}"
+            test ! -s "$RUNNER_TEMP/storage-cli-release-upload.err"
           elif [ "$release_state" != "draft-exact" ]; then
             echo "unexpected Release state: $release_state" >&2
             exit 1
           fi
 
-          bounded_gh "$release_json" "$RUNNER_TEMP/storage-cli-release-after-upload.err" \
-            api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_endpoint"
+          if ! release_state="$(fetch_release_state)"; then
+            cat "$release_list_error" >&2
+            echo "cannot prove whether the GitHub Release exists after upload" >&2
+            exit 1
+          fi
+          test "$release_state" = "draft-exact"
+          set_release_resource_endpoint
           digest="sha256:$(sha256sum "$archive" | awk '{print $1}')"
           node --input-type=module - "$release_json" "$archive" "$digest" <<'NODE'
           import fs from "node:fs";
@@ -602,7 +638,7 @@ jobs:
             # publication. No other network operation occurs before the PATCH.
             verify_mutation_boundary
             bounded_gh "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$RUNNER_TEMP/storage-cli-release-before-publish.err" \
-              api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_endpoint"
+              api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_resource_endpoint"
             node --input-type=module - "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$archive" "$digest" <<'NODE'
           import fs from "node:fs";
           import { validateDraft } from "./scripts/releasePolicy.mjs";
@@ -623,9 +659,9 @@ jobs:
           bounded_gh "$RUNNER_TEMP/storage-cli-published-release.json" "$RUNNER_TEMP/storage-cli-publish.err" \
             api --hostname github.com --method PATCH \
             --header "X-GitHub-Api-Version: 2026-03-10" \
-            -F draft=false "$release_endpoint"
+            -F draft=false "$release_resource_endpoint"
           bounded_gh "$RUNNER_TEMP/storage-cli-final-release.json" "$RUNNER_TEMP/storage-cli-final-release.err" \
-            api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_endpoint"
+            api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_resource_endpoint"
           node --input-type=module - "$RUNNER_TEMP/storage-cli-final-release.json" "$archive" "$digest" <<'NODE'
           import fs from "node:fs";
           import { validatePublished } from "./scripts/releasePolicy.mjs";

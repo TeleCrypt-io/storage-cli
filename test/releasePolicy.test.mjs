@@ -8,7 +8,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   classifyExistingDraft,
+  findReleaseByTag,
   isConfirmedNotFound,
+  parseReleaseList,
   validateDraft,
   validatePublished,
   validateSdkIdentity,
@@ -25,6 +27,7 @@ const sdkIdentity = `tag_ref=refs/tags/v0.5.10\ntag_object=${"d".repeat(40)}\nta
 
 function release(overrides = {}) {
   return {
+    id: 123,
     tag_name: tag,
     name: tag,
     draft: true,
@@ -211,6 +214,17 @@ test("the release workflow performs npm signature verification before SDK proven
   assert.match(workflow, /if test "\$status" = 0; then\s+return 1\s+fi\s+return "\$status"/u);
 });
 
+test("the release workflow discovers drafts through complete paginated list records", () => {
+  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.match(workflow, /api --paginate --jq '\.\[\] \| @json'/u);
+  assert.match(workflow, /parseReleaseList/u);
+  assert.match(workflow, /Number\.isSafeInteger\(release\.id\)/u);
+  assert.match(workflow, /release_resource_endpoint/u);
+  assert.match(workflow, /api --method POST[\s\S]+https:\/\/uploads\.github\.com\/\$\{release_resource_endpoint\}\/assets/u);
+  assert.doesNotMatch(workflow, /release upload/u);
+  assert.doesNotMatch(workflow, /releases\/tags/u);
+});
+
 test("the packaged CLI keeps only its minimum Node engine constraint", () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(packageJson.engines?.node, ">=22.23.2");
@@ -221,6 +235,27 @@ test("only one bounded GitHub 404 is considered a missing Release", () => {
   assert.equal(isConfirmedNotFound(124, "gh: Not Found (HTTP 404)\n"), false);
   assert.equal(isConfirmedNotFound(1, "timeout\ngh: Not Found (HTTP 404)\n"), false);
   assert.equal(isConfirmedNotFound(1, "gh: Forbidden (HTTP 403)\n"), false);
+});
+
+test("release list discovery selects one exact tag and rejects ambiguity", () => {
+  assert.equal(findReleaseByTag([], tag), null);
+  assert.deepEqual(findReleaseByTag([{ id: 456, tag_name: "other" }, release()], tag), release());
+  assert.throws(() => findReleaseByTag([release(), { ...release(), id: 456 }], tag), /multiple Releases/u);
+  assert.throws(() => findReleaseByTag({}, tag), /release list/u);
+  assert.throws(() => findReleaseByTag([{ ...release(), id: "123" }], tag), /list entry/u);
+});
+
+test("release list parsing is bounded and fails closed on incomplete pagination", () => {
+  const encoded = [release(), { ...release(), id: 456, tag_name: "other" }]
+    .map((entry) => JSON.stringify(JSON.stringify(entry))).join("\n");
+  assert.deepEqual(parseReleaseList(`${encoded}\n`), [release(), { ...release(), id: 456, tag_name: "other" }]);
+  const raw = [release(), { ...release(), id: 456, tag_name: "other" }].map((entry) => JSON.stringify(entry)).join("\n");
+  assert.deepEqual(parseReleaseList(`${raw}\n`), [release(), { ...release(), id: 456, tag_name: "other" }]);
+  assert.deepEqual(parseReleaseList(""), []);
+  assert.throws(() => parseReleaseList("{}"), /incomplete/u);
+  assert.throws(() => parseReleaseList("x".repeat(1_048_577)), /bounded/u);
+  assert.throws(() => parseReleaseList(`${encoded.slice(0, -3)}\n`), /incomplete/u);
+  assert.throws(() => parseReleaseList(`${JSON.stringify(JSON.stringify(release()))}\n${JSON.stringify(JSON.stringify(release()))}\n`), /duplicate/u);
 });
 
 test("draft reuse accepts only an empty or exact one-asset draft", () => {
