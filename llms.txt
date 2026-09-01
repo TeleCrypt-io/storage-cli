@@ -17,7 +17,7 @@ success output on stdout or the error object on stderr. Preserve the Recovery Ke
 restore encrypted keys on a new device. Logout revokes the server session before deleting local
 credentials; if revocation fails, the profile remains for retry.
 
-The CLI is Linux-only and requires Node.js 22.23.2 or newer. Set `TELECRYPT_IO_STORAGE_HOME` only
+The CLI is Linux-only and requires Node.js 24.20.0 or newer. Set `TELECRYPT_IO_STORAGE_HOME` only
 to a canonical absolute path; `storage login --no-browser` suppresses the optional browser launch.
 Profile confidentiality comes from owner-only filesystem permissions; the
 profile's bearer credentials and cryptographic state do not have an additional application-level

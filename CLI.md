@@ -9,8 +9,8 @@ Crypto state is persisted in the selected profile so separate CLI processes can 
 encrypted session. `TELECRYPT_IO_STORAGE_HOME`, when set, must be an existing or creatable
 canonical absolute path (no relative paths, `.`/`..` components, or trailing separator).
 
-The CLI requires Linux with `/proc/self/fd` and Node.js `>=22.23.2`. Release verification
-uses that exact Node.js version and the bundled npm `10.9.8`.
+The CLI requires Linux with `/proc/self/fd` and Node.js `>=24.20.0`. Release verification
+uses that exact Node.js version and the bundled npm `11.19.0`.
 
 ## Setup
 

@@ -2,8 +2,8 @@
 
 The command-line interface for TeleCrypt.io end-to-end encrypted Matrix storage.
 
-The CLI runs on Linux and requires Node.js `>=22.23.2`; release tooling verifies that exact Node.js
-version and the bundled npm `10.9.8`.
+The CLI runs on Linux and requires Node.js `>=24.20.0`; release tooling verifies that exact Node.js
+version and the bundled npm `11.19.0`.
 
 It consumes one exact public `@telecrypt-io/storage` library version and provides the
 `telecrypt-io storage` command group: login, recovery, shared vaults and nested folders, and file
