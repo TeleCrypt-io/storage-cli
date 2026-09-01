@@ -20,7 +20,7 @@ npm install -g --ignore-scripts https://github.com/TeleCrypt-io/storage-cli/rele
 
 The package bundles its runtime dependencies, including the exact storage-library version. The
 installer therefore does not need to resolve packages from the NPM registry. The supported runtime
-is Linux with Node.js `>=22.23.2`; release verification uses that exact pinned Node.js version and the bundled npm `10.9.8`.
+is Linux with Node.js `>=24.20.0`; release verification uses that exact pinned Node.js version and the bundled npm `11.19.0`.
 
 ## Release flow
 
@@ -57,6 +57,6 @@ Never replace, delete, or rebuild a release archive. A correction requires a new
 new semver version, and a fresh annotated `storage-cli-v*` tag.
 
 No CLI release is currently eligible from an uncommitted checkout: hosted verification still has to
-run against the exact published, immutable `@telecrypt-io/storage` `0.5.10` /
+run against the exact published, immutable `@telecrypt-io/storage` `0.5.11` /
 `matrix-js-sdk` `42.2.0` binding and a fresh immutable CLI release. The manifest and lockfile select
 those exact versions; do not claim release readiness until every required hosted check passes.

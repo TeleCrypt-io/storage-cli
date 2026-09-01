@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 const EXPECTED = {
-  "@telecrypt-io/storage": "0.5.10",
+  "@telecrypt-io/storage": "0.5.11",
   "matrix-js-sdk": "42.2.0",
 };
 const SRI = /^sha512-[A-Za-z0-9+/]{86}==$/u;

@@ -34,7 +34,7 @@ env:
   HTTPS_PROXY: ""
   ALL_PROXY: ""
   GH_HOST: github.com
-  SDK_REF: v0.5.10
+  SDK_REF: v0.5.11
 
 jobs:
   build:
@@ -49,10 +49,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup Node 22
+      - name: Setup Node 24
         uses: actions/setup-node@v7.0.0
         with:
-          node-version: "22.23.2"
+          node-version: "24.20.0"
           cache: npm
 
       - name: Test release policy helpers offline
@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           bash scripts/hardenReleaseTransport.sh . https://github.com/TeleCrypt-io/storage-cli.git
           node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
-          test "$(npm --version)" = "10.9.8"
+          test "$(npm --version)" = "11.19.0"
           timeout 120s git fetch --quiet --force --no-tags origin \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           tag_ref="refs/tags/$GITHUB_REF_NAME"
@@ -246,7 +246,7 @@ jobs:
           import fs from "node:fs";
 
           const expected = {
-            "@telecrypt-io/storage": "0.5.10",
+            "@telecrypt-io/storage": "0.5.11",
             "matrix-js-sdk": "42.2.0",
           };
           const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -354,10 +354,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Setup Node 22
+      - name: Setup Node 24
         uses: actions/setup-node@v7.0.0
         with:
-          node-version: "22.23.2"
+          node-version: "24.20.0"
 
       - name: Recheck the immutable source identity
         shell: bash
@@ -365,7 +365,7 @@ jobs:
           set -euo pipefail
           bash scripts/hardenReleaseTransport.sh . https://github.com/TeleCrypt-io/storage-cli.git
           node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
-          test "$(npm --version)" = "10.9.8"
+          test "$(npm --version)" = "11.19.0"
           timeout 120s git fetch --quiet --force --no-tags origin \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           tag_ref="refs/tags/$GITHUB_REF_NAME"
