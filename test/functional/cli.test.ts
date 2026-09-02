@@ -517,6 +517,12 @@ describe("CLI", () => {
       expect(deleteFile.code).toBe(0);
       expect(deleteFile.json).toMatchObject({ id: fileId, deleted: true });
 
+      const filesAfterDelete = await cliJson(["storage", "file", "list", parentId], env);
+      expect(filesAfterDelete.code).toBe(0);
+      expect(filesAfterDelete.json.files).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: fileId })]),
+      );
+
       const deleteChild = await cliJson(["storage", "vault", "subfolder", "delete", childId], env);
       expect(deleteChild.code).toBe(0);
       expect(deleteChild.json).toMatchObject({ id: childId, deleted: true });
