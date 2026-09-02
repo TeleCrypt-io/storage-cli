@@ -528,6 +528,9 @@ jobs:
           release_json="$RUNNER_TEMP/storage-cli-release.json"
           release_list_json="$RUNNER_TEMP/storage-cli-release-list.json"
           release_list_error="$RUNNER_TEMP/storage-cli-release-list-error.txt"
+          release_create_json="$RUNNER_TEMP/storage-cli-release-create.json"
+          release_create_error="$RUNNER_TEMP/storage-cli-release-create-error.txt"
+          release_get_error="$RUNNER_TEMP/storage-cli-release-get-error.txt"
           fetch_release_state() {
             bounded_gh "$release_list_json" "$release_list_error" \
               api --paginate --jq '.[] | @json' --hostname github.com \
@@ -556,15 +559,45 @@ jobs:
           }
           NODE
           }
-          set_release_resource_endpoint() {
-            release_id="$(node --input-type=module - "$release_json" <<'NODE'
+          set_release_resource_endpoint_from_json() {
+            local release_path="$1"
+            release_id="$(node --input-type=module - "$release_path" <<'NODE'
           import fs from "node:fs";
           const release = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-          if (!Number.isSafeInteger(release.id) || release.id < 1) throw new Error("GitHub Release ID is invalid");
+          if (!release || typeof release !== "object" || Array.isArray(release) ||
+              !Number.isSafeInteger(release.id) || release.id < 1) {
+            throw new Error("GitHub Release ID is invalid");
+          }
           process.stdout.write(String(release.id));
           NODE
             )"
             release_resource_endpoint="${release_endpoint}/${release_id}"
+          }
+          set_release_resource_endpoint() {
+            set_release_resource_endpoint_from_json "$release_json"
+          }
+          fetch_release_by_id() {
+            bounded_gh "$release_json" "$release_get_error" \
+              api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_resource_endpoint"
+            test ! -s "$release_get_error"
+            node --input-type=module - "$release_json" "$archive" "$release_id" <<'NODE'
+          import fs from "node:fs";
+          import { createHash } from "node:crypto";
+          import { classifyExistingDraft } from "./scripts/releasePolicy.mjs";
+          const [releasePath, archivePath, expectedId] = process.argv.slice(2);
+          const release = JSON.parse(fs.readFileSync(releasePath, "utf8"));
+          if (!Number.isSafeInteger(release?.id) || release.id < 1 || String(release.id) !== expectedId) {
+            throw new Error("GitHub Release ID is not exact");
+          }
+          const expectedTag = process.env.GITHUB_REF_NAME;
+          const digest = `sha256:${createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex")}`;
+          process.stdout.write(classifyExistingDraft(release, {
+            tag: expectedTag,
+            archiveName: `${expectedTag}.tgz`,
+            size: fs.statSync(archivePath).size,
+            digest,
+          }));
+          NODE
           }
           release_state="missing"
           if ! release_state="$(fetch_release_state)"; then
@@ -580,24 +613,27 @@ jobs:
           # revalidated after the read-only Release probe.
           verify_mutation_boundary
           if [ "$release_state" = "missing" ]; then
-            bounded_gh "$RUNNER_TEMP/storage-cli-release-create.out" "$RUNNER_TEMP/storage-cli-release-create.err" \
-              release create "$GITHUB_REF_NAME" \
-              --repo "github.com/$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --draft \
-              --title "$GITHUB_REF_NAME" \
-              --generate-notes
-            release_state="draft-empty"
-            if ! release_state="$(fetch_release_state)"; then
-              cat "$release_list_error" >&2
-              echo "cannot prove whether the newly created GitHub Release exists" >&2
+            bounded_gh "$release_create_json" "$release_create_error" \
+              api --hostname github.com --method POST \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              --raw-field "tag_name=$GITHUB_REF_NAME" \
+              --raw-field "name=$GITHUB_REF_NAME" \
+              --raw-field "target_commitish=$tag_commit" \
+              --field draft=true \
+              --field prerelease=false \
+              --field generate_release_notes=true \
+              "$release_endpoint"
+            test ! -s "$release_create_error"
+            set_release_resource_endpoint_from_json "$release_create_json"
+            if ! release_state="$(fetch_release_by_id)"; then
+              cat "$release_get_error" >&2
+              echo "cannot prove whether the newly created GitHub Release matches the create response" >&2
               exit 1
             fi
             if [ "$release_state" != "draft-empty" ] && [ "$release_state" != "draft-exact" ]; then
               echo "unexpected Release state after creation: $release_state" >&2
               exit 1
             fi
-            set_release_resource_endpoint
           fi
           if [ "$release_state" = "draft-empty" ]; then
             verify_mutation_boundary
@@ -612,13 +648,12 @@ jobs:
             exit 1
           fi
 
-          if ! release_state="$(fetch_release_state)"; then
-            cat "$release_list_error" >&2
+          if ! release_state="$(fetch_release_by_id)"; then
+            cat "$release_get_error" >&2
             echo "cannot prove whether the GitHub Release exists after upload" >&2
             exit 1
           fi
           test "$release_state" = "draft-exact"
-          set_release_resource_endpoint
           digest="sha256:$(sha256sum "$archive" | awk '{print $1}')"
           node --input-type=module - "$release_json" "$archive" "$digest" <<'NODE'
           import fs from "node:fs";

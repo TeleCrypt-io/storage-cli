@@ -225,6 +225,56 @@ test("the release workflow discovers drafts through complete paginated list reco
   assert.doesNotMatch(workflow, /releases\/tags/u);
 });
 
+test("Release creation consumes one returned ID and rechecks that exact resource", () => {
+  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const publish = workflow.slice(workflow.indexOf("name: Publish one exact immutable release"));
+  const createStart = publish.lastIndexOf('if [ "$release_state" = "missing" ]; then');
+  const createEnd = publish.indexOf('if [ "$release_state" = "draft-empty" ]; then', createStart);
+  assert.ok(createStart >= 0 && createEnd > createStart);
+  const create = publish.slice(createStart, createEnd);
+  const directStart = publish.indexOf("fetch_release_by_id() {");
+  const directEnd = publish.indexOf('release_state="missing"', directStart);
+  assert.ok(directStart >= 0 && directEnd > directStart);
+  const direct = publish.slice(directStart, directEnd);
+
+  assert.match(create, /api --hostname github\.com --method POST/u);
+  assert.match(create, /--raw-field "tag_name=\$GITHUB_REF_NAME"/u);
+  assert.match(create, /--raw-field "name=\$GITHUB_REF_NAME"/u);
+  assert.match(create, /--raw-field "target_commitish=\$tag_commit"/u);
+  assert.match(create, /--field draft=true/u);
+  assert.match(create, /--field prerelease=false/u);
+  assert.match(create, /--field generate_release_notes=true/u);
+  assert.match(create, /test ! -s "\$release_create_error"/u);
+  assert.match(create, /set_release_resource_endpoint_from_json "\$release_create_json"/u);
+  assert.match(create, /release_state="\$\(fetch_release_by_id\)"/u);
+  assert.match(create, /draft-empty.*draft-exact/u);
+  assert.doesNotMatch(create, /fetch_release_state|sleep|release create|--method PATCH|uploads\.github\.com/u);
+  assert.match(direct, /api --hostname github\.com[\s\S]+"\$release_resource_endpoint"/u);
+  assert.match(direct, /Number\.isSafeInteger\(release\?\.id\)/u);
+  assert.match(direct, /String\(release\.id\) !== expectedId/u);
+  assert.match(direct, /classifyExistingDraft/u);
+  assert.match(publish, /Number\.isSafeInteger\(release\.id\)/u);
+  assert.equal(publish.match(/\brelease create\b/gu)?.length ?? 0, 0);
+  assert.equal(publish.match(/release_state="\$\(fetch_release_state\)"/gu)?.length, 1);
+  assert.equal(publish.match(/--raw-field "tag_name=\$GITHUB_REF_NAME"/gu)?.length, 1);
+  assert.ok(
+    create.indexOf("set_release_resource_endpoint_from_json") < create.indexOf('release_state="$(fetch_release_by_id)"'),
+  );
+});
+
+test("the release fixtures pin CLI 0.4.6 while retaining SDK 0.5.19", () => {
+  const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const packageLock = JSON.parse(fs.readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.equal(packageJson.version, "0.4.6");
+  assert.equal(packageLock.version, "0.4.6");
+  assert.equal(packageLock.packages?.[""]?.version, "0.4.6");
+  assert.equal(packageJson.dependencies?.["@telecrypt-io/storage"], "0.5.19");
+  assert.equal(packageLock.packages?.["node_modules/@telecrypt-io/storage"]?.version, "0.5.19");
+  assert.match(workflow, /SDK_REF: v0\.5\.19/u);
+  assert.match(workflow, /"@telecrypt-io\/storage": "0\.5\.19"/u);
+});
+
 test("the source and hosted jobs use one exact Node release toolchain", () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(fs.readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
