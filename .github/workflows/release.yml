@@ -34,7 +34,7 @@ env:
   HTTPS_PROXY: ""
   ALL_PROXY: ""
   GH_HOST: github.com
-  SDK_REF: v0.5.11
+  SDK_REF: v0.5.19
 
 jobs:
   build:
@@ -246,7 +246,7 @@ jobs:
           import fs from "node:fs";
 
           const expected = {
-            "@telecrypt-io/storage": "0.5.11",
+            "@telecrypt-io/storage": "0.5.19",
             "matrix-js-sdk": "42.2.0",
           };
           const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));

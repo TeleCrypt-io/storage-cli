@@ -57,6 +57,6 @@ Never replace, delete, or rebuild a release archive. A correction requires a new
 new semver version, and a fresh annotated `storage-cli-v*` tag.
 
 No CLI release is currently eligible from an uncommitted checkout: hosted verification still has to
-run against the exact published, immutable `@telecrypt-io/storage` `0.5.11` /
+run against the exact published, immutable `@telecrypt-io/storage` `0.5.19` /
 `matrix-js-sdk` `42.2.0` binding and a fresh immutable CLI release. The manifest and lockfile select
 those exact versions; do not claim release readiness until every required hosted check passes.

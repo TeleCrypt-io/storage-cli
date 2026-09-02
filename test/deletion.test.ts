@@ -45,7 +45,7 @@ describe("CLI authoritative deletion refusals", () => {
       close: mocks.close,
     });
     mocks[operation].mockRejectedValue(
-      Object.assign(new Error("cannot delete a nonempty vault or folder; delete its files first"), {
+      Object.assign(new Error("cannot delete a nonempty vault or folder; delete its files and empty child folders first"), {
         code: "NON_EMPTY_TREE",
         treeId,
       }),
@@ -69,7 +69,7 @@ describe("CLI authoritative deletion refusals", () => {
     expect(process.exitCode).toBe(1);
     expect(stdout).toBe("");
     expect(JSON.parse(stderr)).toEqual({
-      error: "cannot delete a nonempty vault or folder; delete its files first",
+      error: "cannot delete a nonempty vault or folder; delete its files and empty child folders first",
     });
     expect(mocks[operation]).toHaveBeenCalledWith(
       storage,
