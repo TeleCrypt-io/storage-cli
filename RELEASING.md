@@ -46,12 +46,18 @@ is Linux with Node.js `>=24.20.0`; release verification uses that exact pinned N
    remote annotated tag object, peeled commit, tag ref, and authoritative current `main` tip immediately before
    every Release mutation. Git and GitHub transport configuration is isolated to canonical HTTPS
    endpoints. The recorded SDK release tag object and commit are also revalidated at publication.
-   It creates one exact draft when none exists, uploads the archive, and verifies
-   the draft's one asset and digest. A rerun may reuse only that same exact draft and asset; an
-   existing published, prerelease, mismatched, or altered Release is rejected. The workflow then
-   publishes the verified draft and checks the non-draft, non-prerelease immutable Release and its
-   one archive asset against the tested bytes. The archive's extracted license inventory must also
-   match the lockfile-derived inventory byte for byte.
+   Existing-draft discovery uses one complete paginated Release-list read. When no Release exists,
+   the workflow creates one exact draft through the Releases API, validates the returned numeric
+   Release ID, and constructs the resource endpoint from that ID. It then performs a direct
+   read of that exact resource and proceeds only when the exact empty or exact one-asset draft is
+   classified successfully. A failed, ambiguous, mismatched, published, altered, or ID-mismatched
+   state fails closed; the create mutation is never repeated and the catalog is not polled after
+   creation. It then uploads the archive and verifies the draft's one asset and digest. A rerun may
+   reuse only that same exact draft and asset; an existing published, prerelease, mismatched, or
+   altered Release is rejected. The workflow then publishes the verified draft and checks the
+   non-draft, non-prerelease immutable Release and its one archive asset against the tested bytes.
+   The archive's extracted license inventory must also match the lockfile-derived inventory byte for
+   byte.
 
 Never replace, delete, or rebuild a release archive. A correction requires a new source commit,
 new semver version, and a fresh annotated `storage-cli-v*` tag.
