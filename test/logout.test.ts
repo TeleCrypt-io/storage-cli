@@ -21,6 +21,13 @@ const session: Session = {
 
 const LOGOUT_URL = "https://backend.telecrypt.io/_matrix/client/v3/logout";
 const TOKEN_URL = "https://backend.telecrypt.io/auth/token";
+const directories: string[] = [];
+
+function fixtureDirectory(prefix: string): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
+  directories.push(directory);
+  return directory;
+}
 
 function exactResponse(url: string, body: BodyInit | null, init: ResponseInit): Response {
   const response = new Response(body, init);
@@ -28,9 +35,20 @@ function exactResponse(url: string, body: BodyInit | null, init: ResponseInit): 
   return response;
 }
 
-afterEach(() => {
+afterEach(({ task }) => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  const pending = directories.splice(0);
+  if (task.result?.state === "fail") {
+    process.stderr.write(
+      [
+        "CLI logout unit test failed; retaining fixture directories for investigation:",
+        ...pending,
+      ].join("\n") + "\n",
+    );
+    return;
+  }
+  for (const directory of pending) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 describe("server logout", () => {
@@ -313,22 +331,18 @@ describe("server logout", () => {
   });
 
   it("cancels remote revocation and retains local credentials", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-logout-cancel-"));
+    const dir = fixtureDirectory("telecrypt-logout-cancel");
     const controller = new AbortController();
-    try {
-      writeSession(session, dir);
-      const fetchMock = vi.fn((_url: string, init: RequestInit) => new Promise<never>((_resolve, reject) => {
-        init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-      }));
-      vi.stubGlobal("fetch", fetchMock);
-      const pending = logoutProfile(dir, controller.signal);
-      controller.abort(new Error("cancelled by test"));
-      await expect(pending).rejects.toThrow("server logout cancelled");
-      expect(fs.existsSync(sessionPath(dir))).toBe(true);
-      expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    writeSession(session, dir);
+    const fetchMock = vi.fn((_url: string, init: RequestInit) => new Promise<never>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = logoutProfile(dir, controller.signal);
+    controller.abort(new Error("cancelled by test"));
+    await expect(pending).rejects.toThrow("server logout cancelled");
+    expect(fs.existsSync(sessionPath(dir))).toBe(true);
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
   });
 
   it("consumes a large successful logout response without a diagnostic-size rejection", async () => {
@@ -340,134 +354,106 @@ describe("server logout", () => {
   });
 
   it("retains local credentials when remote revocation fails", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-logout-test-"));
-    try {
-      writeSession(session, dir);
-      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    const dir = fixtureDirectory("telecrypt-logout-test");
+    writeSession(session, dir);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
 
-      await expect(logoutProfile(dir)).rejects.toThrow("server logout request failed");
-      expect(fs.existsSync(sessionPath(dir))).toBe(true);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    await expect(logoutProfile(dir)).rejects.toThrow("server logout request failed");
+    expect(fs.existsSync(sessionPath(dir))).toBe(true);
   });
 
   it("clears local credentials only after remote revocation succeeds", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-logout-test-"));
-    try {
-      writeSession(session, dir);
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 })));
+    const dir = fixtureDirectory("telecrypt-logout-test");
+    writeSession(session, dir);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 })));
 
-      await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: true, serverLogout: "revoked" });
-      expect(fs.existsSync(sessionPath(dir))).toBe(false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: true, serverLogout: "revoked" });
+    expect(fs.existsSync(sessionPath(dir))).toBe(false);
   });
 
   it("retains an idempotent revoke marker when local cleanup fails", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-logout-cleanup-test-"));
-    try {
-      writeSession(session, dir);
-      fs.mkdirSync(cryptoSnapshotPath(dir), { mode: 0o700 });
-      const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
-      vi.stubGlobal("fetch", fetchMock);
+    const dir = fixtureDirectory("telecrypt-logout-cleanup-test");
+    writeSession(session, dir);
+    fs.mkdirSync(cryptoSnapshotPath(dir), { mode: 0o700 });
+    const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
 
-      await expect(logoutProfile(dir)).rejects.toThrow();
-      expect(fs.existsSync(sessionPath(dir))).toBe(true);
-      expect(fs.existsSync(logoutMarkerPath(dir))).toBe(true);
+    await expect(logoutProfile(dir)).rejects.toThrow();
+    expect(fs.existsSync(sessionPath(dir))).toBe(true);
+    expect(fs.existsSync(logoutMarkerPath(dir))).toBe(true);
 
-      fs.rmSync(cryptoSnapshotPath(dir), { recursive: true });
-      fetchMock.mockRejectedValue(new Error("remote must not be contacted again"));
-      await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: true, serverLogout: "revoked" });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(fs.existsSync(logoutMarkerPath(dir))).toBe(false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    fs.rmSync(cryptoSnapshotPath(dir), { recursive: true });
+    fetchMock.mockRejectedValue(new Error("remote must not be contacted again"));
+    await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: true, serverLogout: "revoked" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(logoutMarkerPath(dir))).toBe(false);
   });
 
   it("keeps the revoke marker when unexpected private state blocks final cleanup", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-logout-extra-state-test-"));
+    const dir = fixtureDirectory("telecrypt-logout-extra-state-test");
     const extra = path.join(dir, "unexpected-private-state");
-    try {
-      writeSession(session, dir);
-      fs.writeFileSync(extra, "retain until inspected\n", { mode: 0o600 });
-      const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
-      vi.stubGlobal("fetch", fetchMock);
+    writeSession(session, dir);
+    fs.writeFileSync(extra, "retain until inspected\n", { mode: 0o600 });
+    const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
 
-      await expect(logoutProfile(dir)).rejects.toThrow("local cleanup is incomplete");
-      expect(fs.existsSync(sessionPath(dir))).toBe(false);
-      expect(fs.existsSync(logoutMarkerPath(dir))).toBe(true);
-      expect(fs.existsSync(extra)).toBe(true);
+    await expect(logoutProfile(dir)).rejects.toThrow("local cleanup is incomplete");
+    expect(fs.existsSync(sessionPath(dir))).toBe(false);
+    expect(fs.existsSync(logoutMarkerPath(dir))).toBe(true);
+    expect(fs.existsSync(extra)).toBe(true);
 
-      fs.rmSync(extra);
-      await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: false, serverLogout: "revoked" });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    fs.rmSync(extra);
+    await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: false, serverLogout: "revoked" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to direct cleanup when marker persistence fails after revocation", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-logout-marker-write-test-"));
+    const dir = fixtureDirectory("telecrypt-logout-marker-write-test");
+    writeSession(session, dir);
+    const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const originalRename = fs.renameSync;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation(((from, to) => {
+      if (String(to) === logoutMarkerPath(dir) || String(to).endsWith("/logout-complete")) throw new Error("simulated marker write failure");
+      return originalRename(from, to);
+    }) as typeof fs.renameSync);
     try {
-      writeSession(session, dir);
-      const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
-      vi.stubGlobal("fetch", fetchMock);
-      const originalRename = fs.renameSync;
-      const rename = vi.spyOn(fs, "renameSync").mockImplementation(((from, to) => {
-        if (String(to) === logoutMarkerPath(dir) || String(to).endsWith("/logout-complete")) throw new Error("simulated marker write failure");
-        return originalRename(from, to);
-      }) as typeof fs.renameSync);
-      try {
-        await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: true, serverLogout: "revoked" });
-      } finally {
-        rename.mockRestore();
-      }
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(fs.existsSync(sessionPath(dir))).toBe(false);
-      expect(fs.existsSync(logoutMarkerPath(dir))).toBe(false);
+      await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: true, serverLogout: "revoked" });
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      rename.mockRestore();
     }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(sessionPath(dir))).toBe(false);
+    expect(fs.existsSync(logoutMarkerPath(dir))).toBe(false);
   });
 
   it("does not contact the server when no local session exists", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-logout-missing-"));
-    try {
-      const fetchMock = vi.fn();
-      vi.stubGlobal("fetch", fetchMock);
+    const dir = fixtureDirectory("telecrypt-logout-missing");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
 
-      await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: false, serverLogout: "not-needed" });
-      expect(fetchMock).not.toHaveBeenCalled();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: false, serverLogout: "not-needed" });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("revokes and clears a token-bearing pending login state", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-logout-pending-"));
-    try {
-      writePendingSessionUnlocked({
-        homeserver: session.homeserver,
-        deviceId: session.deviceId,
-        accessToken: session.accessToken,
-        oidcIssuer: session.oidcIssuer,
-        refreshToken: session.refreshToken,
-        oidcClientId: session.oidcClientId,
-        oidcTokenEndpoint: session.oidcTokenEndpoint,
-        oidcRevocationEndpoint: session.oidcRevocationEndpoint,
-        matrixServerName: session.matrixServerName,
-      }, dir);
-      const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
-      vi.stubGlobal("fetch", fetchMock);
+    const dir = fixtureDirectory("telecrypt-logout-pending");
+    writePendingSessionUnlocked({
+      homeserver: session.homeserver,
+      deviceId: session.deviceId,
+      accessToken: session.accessToken,
+      oidcIssuer: session.oidcIssuer,
+      refreshToken: session.refreshToken,
+      oidcClientId: session.oidcClientId,
+      oidcTokenEndpoint: session.oidcTokenEndpoint,
+      oidcRevocationEndpoint: session.oidcRevocationEndpoint,
+      matrixServerName: session.matrixServerName,
+    }, dir);
+    const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
 
-      await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: true, serverLogout: "revoked" });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(fs.existsSync(pendingSessionPath(dir))).toBe(false);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    await expect(logoutProfile(dir)).resolves.toEqual({ hadSession: true, serverLogout: "revoked" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(pendingSessionPath(dir))).toBe(false);
   });
 });

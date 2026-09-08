@@ -39,12 +39,22 @@ const SESSION: Session = {
 
 const dirs: string[] = [];
 
-afterEach(() => {
+afterEach(({ task }) => {
   delete process.env.TELECRYPT_IO_STORAGE_HOME;
-  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   mocks.runDeviceCodeLogin.mockReset();
   mocks.initStorageForNewSession.mockReset();
   mocks.requestServerLogout.mockReset();
+  const pending = dirs.splice(0);
+  if (task.result?.state === "fail") {
+    process.stderr.write(
+      [
+        "CLI login-transaction unit test failed; retaining fixture directories for investigation:",
+        ...pending,
+      ].join("\n") + "\n",
+    );
+    return;
+  }
+  for (const dir of pending) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 function profileDir(): string {

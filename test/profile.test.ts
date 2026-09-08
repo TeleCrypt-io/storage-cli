@@ -64,11 +64,21 @@ function session() {
   };
 }
 
-afterEach(() => {
+afterEach(({ task }) => {
   vi.restoreAllMocks();
   if (originalConfiguredHome === undefined) delete process.env.TELECRYPT_IO_STORAGE_HOME;
   else process.env.TELECRYPT_IO_STORAGE_HOME = originalConfiguredHome;
-  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  const pending = dirs.splice(0);
+  if (task.result?.state === "fail") {
+    process.stderr.write(
+      [
+        "CLI profile unit test failed; retaining fixture directories for investigation:",
+        ...pending,
+      ].join("\n") + "\n",
+    );
+    return;
+  }
+  for (const dir of pending) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe("secret-bearing CLI profile state", () => {

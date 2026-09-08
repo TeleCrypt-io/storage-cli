@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import * as os from "node:os";
@@ -21,6 +21,28 @@ const dist = [
   "oidc.d.ts", "oidc.js", "output.d.ts", "output.js", "processExit.d.ts", "processExit.js", "profile.d.ts", "profile.js",
   "recoveryInput.d.ts", "recoveryInput.js", "storage.d.ts", "storage.js", "topology.d.ts", "topology.js",
 ].map((name) => `package/dist/${name}`);
+
+const directories: string[] = [];
+
+function fixtureDirectory(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-release-archive-test-"));
+  directories.push(directory);
+  return directory;
+}
+
+afterEach(({ task }) => {
+  const pending = directories.splice(0);
+  if (task.result?.state === "fail") {
+    process.stderr.write(
+      [
+        "CLI release-archive unit test failed; retaining fixture directories for investigation:",
+        ...pending,
+      ].join("\n") + "\n",
+    );
+    return;
+  }
+  for (const directory of pending) fs.rmSync(directory, { recursive: true, force: true });
+});
 
 function archiveFor(packageFiles: string[] = ["package/node_modules/dep/LICENSE", "package/node_modules/dep/package.json"]): string[] {
   return [...root, ...dist, "package/node_modules/dep/", ...packageFiles];
@@ -120,29 +142,25 @@ describe("release source and archive invariants", () => {
   });
 
   it("rejects test harness code and identity override markers from real archives", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-release-archive-test-"));
-    try {
-      fs.mkdirSync(path.join(dir, "package", "dist"), { recursive: true });
-      const archivePath = path.join(dir, "release.tgz");
-      const member = "package/dist/index.js";
-      fs.writeFileSync(path.join(dir, member), "export const production = true;\n");
-      execFileSync("tar", ["-czf", archivePath, "-C", dir, "package"]);
-      expect(validateArchiveSourceContent(archivePath, [member])).toBe(true);
+    const dir = fixtureDirectory();
+    fs.mkdirSync(path.join(dir, "package", "dist"), { recursive: true });
+    const archivePath = path.join(dir, "release.tgz");
+    const member = "package/dist/index.js";
+    fs.writeFileSync(path.join(dir, member), "export const production = true;\n");
+    execFileSync("tar", ["-czf", archivePath, "-C", dir, "package"]);
+    expect(validateArchiveSourceContent(archivePath, [member])).toBe(true);
 
-      for (const marker of [
-        "TELECRYPT_IO_STORAGE_TEST_FIXTURE",
-        "test/harness/cliEntry.ts",
-        "CliRuntimeOptions",
-        "activeRuntime",
-        "TELECRYPT_IO_STORAGE_NO_BROWSER",
-        "TELECRYPT_IO_STORAGE_DEBUG",
-      ]) {
-        fs.writeFileSync(path.join(dir, member), `${marker}\n`);
-        execFileSync("tar", ["-czf", archivePath, "-C", dir, "package"]);
-        expect(() => validateArchiveSourceContent(archivePath, [member])).toThrow(/forbidden test marker/u);
-      }
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+    for (const marker of [
+      "TELECRYPT_IO_STORAGE_TEST_FIXTURE",
+      "test/harness/cliEntry.ts",
+      "CliRuntimeOptions",
+      "activeRuntime",
+      "TELECRYPT_IO_STORAGE_NO_BROWSER",
+      "TELECRYPT_IO_STORAGE_DEBUG",
+    ]) {
+      fs.writeFileSync(path.join(dir, member), `${marker}\n`);
+      execFileSync("tar", ["-czf", archivePath, "-C", dir, "package"]);
+      expect(() => validateArchiveSourceContent(archivePath, [member])).toThrow(/forbidden test marker/u);
     }
   });
 });

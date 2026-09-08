@@ -7,9 +7,19 @@ import { MAX_MEDIA_FILE_BYTES } from "../src/limits.js";
 
 const directories: string[] = [];
 
-afterEach(() => {
+afterEach(({ task }) => {
   vi.restoreAllMocks();
-  for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
+  const pending = directories.splice(0);
+  if (task.result?.state === "fail") {
+    process.stderr.write(
+      [
+        "CLI file-transfer unit test failed; retaining fixture directories for investigation:",
+        ...pending,
+      ].join("\n") + "\n",
+    );
+    return;
+  }
+  for (const directory of pending) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 function directory(): string {

@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/index.js";
 import {
   initStorageForNewSession,
@@ -30,6 +30,29 @@ const SESSION: Session = {
   oidcRevocationEndpoint: "https://backend.telecrypt.io/revoke",
 };
 
+const directories: string[] = [];
+
+function fixtureDirectory(prefix: string): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
+  directories.push(directory);
+  return directory;
+}
+
+afterEach(({ task }) => {
+  vi.restoreAllMocks();
+  const pending = directories.splice(0);
+  if (task.result?.state === "fail") {
+    process.stderr.write(
+      [
+        "CLI storage unit test failed; retaining fixture directories for investigation:",
+        ...pending,
+      ].join("\n") + "\n",
+    );
+    return;
+  }
+  for (const directory of pending) fs.rmSync(directory, { recursive: true, force: true });
+});
+
 describe("OIDC session refresh persistence", () => {
   it("keeps the latest rotated refresh token when a later refresh omits one", () => {
     const rotated = withRefreshedTokens(SESSION, {
@@ -51,45 +74,37 @@ describe("OIDC session refresh persistence", () => {
   });
 
   it("rejects a tampered cross-origin refresh endpoint before opening storage", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-oidc-endpoint-test-"));
-    try {
-      await expect(
-        initStorageForNewSession(
-          {
-            ...SESSION,
-            homeserver: "https://backend.telecrypt.io",
-            oidcTokenEndpoint: "https://evil.example/token",
-          },
-          dir,
-        ),
-      ).rejects.toThrow(/OIDC token endpoint.*configured OIDC origin/);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = fixtureDirectory("telecrypt-oidc-endpoint-test");
+    await expect(
+      initStorageForNewSession(
+        {
+          ...SESSION,
+          homeserver: "https://backend.telecrypt.io",
+          oidcTokenEndpoint: "https://evil.example/token",
+        },
+        dir,
+      ),
+    ).rejects.toThrow(/OIDC token endpoint.*configured OIDC origin/);
   });
 
   it("releases its owned profile fence when new-session initialization fails", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-init-failure-lock-"));
-    try {
-      await expect(
-        initStorageForNewSession(
-          {
-            ...SESSION,
-            homeserver: "https://backend.telecrypt.io",
-            oidcTokenEndpoint: "https://evil.example/token",
-          },
-          dir,
-        ),
-      ).rejects.toThrow(/OIDC token endpoint/);
-      const lock = acquireProfileLock(dir);
-      lock.release();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const dir = fixtureDirectory("telecrypt-init-failure-lock");
+    await expect(
+      initStorageForNewSession(
+        {
+          ...SESSION,
+          homeserver: "https://backend.telecrypt.io",
+          oidcTokenEndpoint: "https://evil.example/token",
+        },
+        dir,
+      ),
+    ).rejects.toThrow(/OIDC token endpoint/);
+    const lock = acquireProfileLock(dir);
+    lock.release();
   });
 
   it("preserves cancellation when opening storage cannot release its profile lock", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-open-cancel-lock-"));
+    const dir = fixtureDirectory("telecrypt-open-cancel-lock");
     const release = vi.fn(() => {
       throw new Error("lock release failed");
     });
@@ -101,7 +116,6 @@ describe("OIDC session refresh persistence", () => {
       failure = error;
     } finally {
       acquireSpy.mockRestore();
-      fs.rmSync(dir, { recursive: true, force: true });
     }
 
     expect(failure).toBeInstanceOf(AggregateError);
@@ -113,7 +127,7 @@ describe("OIDC session refresh persistence", () => {
   });
 
   it("preserves cancellation when new-session storage cannot release its profile lock", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-new-session-cancel-lock-"));
+    const dir = fixtureDirectory("telecrypt-new-session-cancel-lock");
     const release = vi.fn(() => {
       throw new Error("lock release failed");
     });
@@ -125,7 +139,6 @@ describe("OIDC session refresh persistence", () => {
       failure = error;
     } finally {
       acquireSpy.mockRestore();
-      fs.rmSync(dir, { recursive: true, force: true });
     }
 
     expect(failure).toBeInstanceOf(AggregateError);
