@@ -111,52 +111,46 @@ test("the SDK consumer contract requires exact registry bytes", () => {
 
 test("the SDK consumer contract accepts a normal npm v3 lock entry without name or gitHead", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sdk-binding-test-"));
-  try {
-    const packageDirectory = path.join(directory, "package");
-    const archivePath = path.join(directory, "storage-0.5.20.tgz");
-    fs.mkdirSync(packageDirectory);
-    fs.writeFileSync(
-      path.join(packageDirectory, "package.json"),
-      JSON.stringify({ name: "@telecrypt-io/storage", version: "0.5.20" }),
-    );
-    execFileSync("tar", ["-czf", archivePath, "-C", directory, "package"], {
-      maxBuffer: Number.POSITIVE_INFINITY,
-    });
-    const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(archivePath)).digest("base64")}`;
-    const lock = {
-      packages: {
-        "node_modules/@telecrypt-io/storage": {
-          version: "0.5.20",
-          resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.20.tgz",
-          integrity,
-          inBundle: true,
-          license: "BUSL-1.1",
-        },
+  const packageDirectory = path.join(directory, "package");
+  const archivePath = path.join(directory, "storage-0.5.20.tgz");
+  fs.mkdirSync(packageDirectory);
+  fs.writeFileSync(
+    path.join(packageDirectory, "package.json"),
+    JSON.stringify({ name: "@telecrypt-io/storage", version: "0.5.20" }),
+  );
+  execFileSync("tar", ["-czf", archivePath, "-C", directory, "package"], {
+    maxBuffer: Number.POSITIVE_INFINITY,
+  });
+  const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(archivePath)).digest("base64")}`;
+  const lock = {
+    packages: {
+      "node_modules/@telecrypt-io/storage": {
+        version: "0.5.20",
+        resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.20.tgz",
+        integrity,
+        inBundle: true,
+        license: "BUSL-1.1",
       },
-    };
-    assert.equal(verifySdkPackageBinding(archivePath, lock, "0.5.20"), true);
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
+    },
+  };
+  assert.equal(verifySdkPackageBinding(archivePath, lock, "0.5.20"), true);
+  fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test("the SDK consumer contract preserves package extraction failures", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sdk-binding-invalid-"));
-  try {
-    const archivePath = path.join(directory, "storage-sdk.tgz");
-    fs.writeFileSync(archivePath, "not a tar archive");
-    const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(archivePath)).digest("base64")}`;
-    assert.throws(
-      () => verifySdkPackageBinding(archivePath, sdkLock(integrity), "0.5.20"),
-      (error) => {
-        assert.match(error.message, /package metadata is invalid or unavailable/u);
-        assert.ok(error.cause instanceof Error);
-        return true;
-      },
-    );
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
+  const archivePath = path.join(directory, "storage-sdk.tgz");
+  fs.writeFileSync(archivePath, "not a tar archive");
+  const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(archivePath)).digest("base64")}`;
+  assert.throws(
+    () => verifySdkPackageBinding(archivePath, sdkLock(integrity), "0.5.20"),
+    (error) => {
+      assert.match(error.message, /package metadata is invalid or unavailable/u);
+      assert.ok(error.cause instanceof Error);
+      return true;
+    },
+  );
+  fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test("the SDK consumer contract rejects malformed package, lock, bytes, and version identities", () => {
@@ -164,66 +158,60 @@ test("the SDK consumer contract rejects malformed package, lock, bytes, and vers
   const fixtures = [];
   const valid = makeSdkArchive(validMetadata);
   fixtures.push(valid);
-  try {
-    assert.equal(verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity), "0.5.20"), true);
+  assert.equal(verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity), "0.5.20"), true);
 
-    for (const packageJson of [
-      { ...validMetadata, name: "@telecrypt-io/not-storage" },
-      { ...validMetadata, version: "0.5.21" },
-    ]) {
-      const malformed = makeSdkArchive(packageJson);
-      fixtures.push(malformed);
-      assert.throws(
-        () => verifySdkPackageBinding(malformed.archivePath, sdkLock(malformed.integrity), "0.5.20"),
-        /identity/u,
-      );
-    }
-
+  for (const packageJson of [
+    { ...validMetadata, name: "@telecrypt-io/not-storage" },
+    { ...validMetadata, version: "0.5.21" },
+  ]) {
+    const malformed = makeSdkArchive(packageJson);
+    fixtures.push(malformed);
     assert.throws(
-      () => verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity, { name: "@telecrypt-io/not-storage" }), "0.5.20"),
-      /lockfile/u,
+      () => verifySdkPackageBinding(malformed.archivePath, sdkLock(malformed.integrity), "0.5.20"),
+      /identity/u,
     );
-    assert.throws(
-      () => verifySdkPackageBinding(
-        valid.archivePath,
-        sdkLock(valid.integrity, { resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.21.tgz" }),
-        "0.5.20",
-      ),
-      /provenance/u,
-    );
-
-    const differentBytes = makeSdkArchive({ ...validMetadata, marker: "different" });
-    fixtures.push(differentBytes);
-    assert.throws(
-      () => verifySdkPackageBinding(differentBytes.archivePath, sdkLock(valid.integrity), "0.5.20"),
-      /bytes/u,
-    );
-    assert.throws(
-      () => verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity), "01.2.3"),
-      /semver/u,
-    );
-  } finally {
-    for (const fixture of fixtures) fs.rmSync(fixture.directory, { recursive: true, force: true });
   }
+
+  assert.throws(
+    () => verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity, { name: "@telecrypt-io/not-storage" }), "0.5.20"),
+    /lockfile/u,
+  );
+  assert.throws(
+    () => verifySdkPackageBinding(
+      valid.archivePath,
+      sdkLock(valid.integrity, { resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.21.tgz" }),
+      "0.5.20",
+    ),
+    /provenance/u,
+  );
+
+  const differentBytes = makeSdkArchive({ ...validMetadata, marker: "different" });
+  fixtures.push(differentBytes);
+  assert.throws(
+    () => verifySdkPackageBinding(differentBytes.archivePath, sdkLock(valid.integrity), "0.5.20"),
+    /bytes/u,
+  );
+  assert.throws(
+    () => verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity), "01.2.3"),
+    /semver/u,
+  );
+  for (const fixture of fixtures) fs.rmSync(fixture.directory, { recursive: true, force: true });
 });
 
 test("the SDK CLI verifier bounds its lockfile input", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sdk-binding-lock-bound-"));
-  try {
-    const lockPath = path.join(directory, "package-lock.json");
-    fs.writeFileSync(lockPath, `${JSON.stringify({ packages: {} })}${"x".repeat(131_072)}`);
-    assert.throws(
-      () => execFileSync(process.execPath, [
-        fileURLToPath(new URL("../scripts/verifySdkPackage.mjs", import.meta.url)),
-        "/unavailable/sdk.tgz",
-        lockPath,
-        "0.5.20",
-      ], { encoding: "utf8", maxBuffer: Number.POSITIVE_INFINITY, stdio: "pipe" }),
-      /bounded JSON input/u,
-    );
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
+  const lockPath = path.join(directory, "package-lock.json");
+  fs.writeFileSync(lockPath, `${JSON.stringify({ packages: {} })}${"x".repeat(131_072)}`);
+  assert.throws(
+    () => execFileSync(process.execPath, [
+      fileURLToPath(new URL("../scripts/verifySdkPackage.mjs", import.meta.url)),
+      "/unavailable/sdk.tgz",
+      lockPath,
+      "0.5.20",
+    ], { encoding: "utf8", maxBuffer: Number.POSITIVE_INFINITY, stdio: "pipe" }),
+    /bounded JSON input/u,
+  );
+  fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test("the release workflow performs npm signature verification before SDK provenance binding", () => {
