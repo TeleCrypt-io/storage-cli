@@ -591,9 +591,11 @@ describe("secret-bearing CLI profile state", () => {
 
     fs.rmSync(sessionPath(dir), { recursive: true });
     fs.writeFileSync(sessionPath(dir), JSON.stringify(session()), { mode: 0o640 });
+    fs.chmodSync(sessionPath(dir), 0o640);
     expect(() => readSession(dir)).toThrow(/accessible by group or other users/);
 
     fs.writeFileSync(cryptoSnapshotPath(dir), Buffer.from([1]), { mode: 0o640 });
+    fs.chmodSync(cryptoSnapshotPath(dir), 0o640);
     expect(() => loadSnapshotFromDisk(cryptoSnapshotPath(dir))).toThrow(
       /accessible by group or other users/,
     );
