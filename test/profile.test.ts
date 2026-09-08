@@ -16,6 +16,7 @@ import {
   pendingSessionPath,
   profileDir as configuredProfileDir,
   readPrivateFile,
+  readPendingSession,
   readSession,
   sessionPath,
   writePrivateFile,
@@ -33,6 +34,19 @@ function profileDir(): string {
   fs.chmodSync(dir, 0o700);
   dirs.push(dir);
   return dir;
+}
+
+function unusedPid(): number {
+  let pid = 2 ** 30;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+      pid += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return pid;
+      throw error;
+    }
+  }
 }
 
 function session() {
@@ -100,6 +114,47 @@ describe("secret-bearing CLI profile state", () => {
     const dir = profileDir();
     fs.writeFileSync(sessionPath(dir), JSON.stringify({ ...session(), refreshToken: "" }), { mode: 0o600 });
     expect(() => readSession(dir)).toThrow(/not a valid OIDC\/MAS session/);
+  });
+
+  it("retains profile JSON parsing failures as causes", () => {
+    const dir = profileDir();
+    fs.writeFileSync(sessionPath(dir), "not-json", { mode: 0o600 });
+    fs.writeFileSync(pendingSessionPath(dir), "also-not-json", { mode: 0o600 });
+
+    let sessionFailure: unknown;
+    let pendingFailure: unknown;
+    try {
+      readSession(dir);
+    } catch (error) {
+      sessionFailure = error;
+    }
+    try {
+      readPendingSession(dir);
+    } catch (error) {
+      pendingFailure = error;
+    }
+
+    expect(sessionFailure).toHaveProperty("message", "profile session is not valid JSON; log in again");
+    expect(sessionFailure).toHaveProperty("cause");
+    expect((sessionFailure as Error).cause).toBeInstanceOf(SyntaxError);
+    expect(pendingFailure).toHaveProperty("message", "pending login state is not valid JSON; inspect it before retrying");
+    expect(pendingFailure).toHaveProperty("cause");
+    expect((pendingFailure as Error).cause).toBeInstanceOf(SyntaxError);
+  });
+
+  it("retains crypto snapshot deserialization failures as causes", () => {
+    const dir = profileDir();
+    fs.writeFileSync(cryptoSnapshotPath(dir), Buffer.from([0xff]), { mode: 0o600 });
+
+    let failure: unknown;
+    try {
+      loadSnapshotFromDisk(cryptoSnapshotPath(dir));
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toHaveProperty("message", "crypto snapshot is unreadable; remove it and retry");
+    expect(failure).toHaveProperty("cause");
   });
 
   it("rejects a pre-issuer session instead of attempting refresh with ambiguous metadata", () => {
@@ -206,16 +261,7 @@ describe("secret-bearing CLI profile state", () => {
 
   it("recovers a stale PID lock but fences a live process", async () => {
     const dir = profileDir();
-    let stalePid = 2 ** 30;
-    while (true) {
-      try {
-        process.kill(stalePid, 0);
-        stalePid += 1;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") break;
-        throw error;
-      }
-    }
+    const stalePid = unusedPid();
     const lockPath = path.join(dir, ".profile.lock");
     fs.writeFileSync(lockPath, JSON.stringify({ pid: stalePid, token: "stale" }), { mode: 0o600 });
     const recovered = acquireProfileLock(dir);
@@ -263,23 +309,42 @@ describe("secret-bearing CLI profile state", () => {
     } finally {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGTERM");
-        await once(child, "exit").catch(() => undefined);
+        await once(child, "exit");
       }
+    }
+  });
+
+  it("keeps resolving stale-lock races until the lock state is definitive", () => {
+    const dir = profileDir();
+    const lockPath = path.join(dir, ".profile.lock");
+    const stale = JSON.stringify({ pid: unusedPid(), token: "stale" });
+    fs.writeFileSync(lockPath, stale, { mode: 0o600 });
+    const originalRename = fs.renameSync;
+    let races = 0;
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation(((from, to) => {
+      if (races < 9 && String(from).endsWith("/.profile.lock") && String(to).endsWith(".stale")) {
+        fs.rmSync(lockPath);
+        fs.writeFileSync(lockPath, stale, { mode: 0o600 });
+        races += 1;
+        const error = new Error("simulated stale-lock race") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return originalRename(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      const recovered = acquireProfileLock(dir);
+      expect(races).toBe(9);
+      recovered.release();
+    } finally {
+      rename.mockRestore();
+      fs.rmSync(lockPath, { force: true });
     }
   });
 
   it("does not unlink a replacement lock during stale recovery interleaving", () => {
     const dir = profileDir();
-    let stalePid = 2 ** 30;
-    while (true) {
-      try {
-        process.kill(stalePid, 0);
-        stalePid += 1;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") break;
-        throw error;
-      }
-    }
+    const stalePid = unusedPid();
     const lockPath = path.join(dir, ".profile.lock");
     const stale = JSON.stringify({ pid: stalePid, token: "stale" });
     const replacement = JSON.stringify({ pid: process.pid, token: "replacement" });
@@ -304,16 +369,7 @@ describe("secret-bearing CLI profile state", () => {
 
   it("does not overwrite a lock acquired after stale quarantine", () => {
     const dir = profileDir();
-    let stalePid = 2 ** 30;
-    while (true) {
-      try {
-        process.kill(stalePid, 0);
-        stalePid += 1;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") break;
-        throw error;
-      }
-    }
+    const stalePid = unusedPid();
     const lockPath = path.join(dir, ".profile.lock");
     const stale = JSON.stringify({ pid: stalePid, token: "stale" });
     const replacement = JSON.stringify({ pid: process.pid, token: "replacement" });
@@ -399,21 +455,102 @@ describe("secret-bearing CLI profile state", () => {
     const dir = profileDir();
     const lock = acquireProfileLock(dir);
     const originalRemove = fs.rmSync;
+    const releaseFailure = new Error("simulated release failure");
     let failOnce = true;
     const remove = vi.spyOn(fs, "rmSync").mockImplementation(((target, options) => {
       if (failOnce && String(target).endsWith(".release")) {
         failOnce = false;
-        throw new Error("simulated release failure");
+        throw releaseFailure;
       }
       return originalRemove(target, options);
     }) as typeof fs.rmSync);
     try {
-      expect(() => lock.release()).toThrow("profile lock cleanup failed");
+      let failure: unknown;
+      try {
+        lock.release();
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("profile lock cleanup failed");
+      expect((failure as Error).cause).toBe(releaseFailure);
       expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".release"))).toBe(true);
       lock.release();
       expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".release"))).toBe(false);
     } finally {
       remove.mockRestore();
+    }
+  });
+
+  it("rethrows an ambiguous directory close failure without retrying the close", () => {
+    const dir = profileDir();
+    const lock = acquireProfileLock(dir);
+    const originalClose = fs.closeSync;
+    const closeFailure = new Error("simulated directory close failure");
+    const close = vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
+      originalClose(fd);
+      if (fd === lock.directoryFd) throw closeFailure;
+    });
+    try {
+      expect(() => lock.release()).toThrow("profile lock cleanup failed");
+      expect(() => lock.release()).toThrow("profile lock cleanup failed");
+      expect(close.mock.calls.filter(([fd]) => fd === lock.directoryFd)).toHaveLength(1);
+    } finally {
+      close.mockRestore();
+    }
+  });
+
+  it("removes the exact lock entry when initial lock synchronization fails", () => {
+    const dir = profileDir();
+    const sync = vi.spyOn(fs, "fsyncSync").mockImplementation(() => {
+      throw new Error("simulated lock synchronization failure");
+    });
+    try {
+      expect(() => acquireProfileLock(dir)).toThrow("simulated lock synchronization failure");
+      expect(fs.existsSync(path.join(dir, ".profile.lock"))).toBe(false);
+      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".failed"))).toBe(false);
+    } finally {
+      sync.mockRestore();
+    }
+  });
+
+  it("removes a partial lock entry when the initial write fails", () => {
+    const dir = profileDir();
+    const originalWrite = fs.writeFileSync;
+    const write = vi.spyOn(fs, "writeFileSync").mockImplementation(((file, data, options) => {
+      if (typeof file === "number") {
+        originalWrite(file, "{", options);
+        throw new Error("simulated partial lock write failure");
+      }
+      return originalWrite(file, data, options);
+    }) as typeof fs.writeFileSync);
+    try {
+      expect(() => acquireProfileLock(dir)).toThrow("simulated partial lock write failure");
+      expect(fs.existsSync(path.join(dir, ".profile.lock"))).toBe(false);
+      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".failed"))).toBe(false);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it("removes the exact lock entry when its initial descriptor close fails", () => {
+    const dir = profileDir();
+    const originalClose = fs.closeSync;
+    let closeCalls = 0;
+    const close = vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
+      closeCalls += 1;
+      if (closeCalls === 3) {
+        originalClose(fd);
+        throw new Error("simulated lock descriptor close failure");
+      }
+      return originalClose(fd);
+    });
+    try {
+      expect(() => acquireProfileLock(dir)).toThrow("simulated lock descriptor close failure");
+      expect(fs.existsSync(path.join(dir, ".profile.lock"))).toBe(false);
+      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".failed"))).toBe(false);
+    } finally {
+      close.mockRestore();
     }
   });
 

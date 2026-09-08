@@ -67,7 +67,7 @@ jobs:
           bash scripts/hardenReleaseTransport.sh . https://github.com/TeleCrypt-io/storage-cli.git
           node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
           test "$(npm --version)" = "11.19.0"
-          timeout 120s git fetch --quiet --force --no-tags origin \
+          timeout 120s git fetch --force --no-tags origin \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           tag_ref="refs/tags/$GITHUB_REF_NAME"
           test "$(git cat-file -t "$tag_ref")" = tag
@@ -142,52 +142,74 @@ jobs:
           mkdir -p "$RUNNER_TEMP/storage-sdk-package"
           timeout 120s npm pack --ignore-scripts --no-package-lock \
             --pack-destination "$RUNNER_TEMP/storage-sdk-package" \
-            "@telecrypt-io/storage@$sdk_version" > "$RUNNER_TEMP/storage-sdk-pack.txt"
+            "@telecrypt-io/storage@$sdk_version"
           sdk_archive="$(find "$RUNNER_TEMP/storage-sdk-package" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$sdk_archive"
 
           provenance_dir="$RUNNER_TEMP/storage-sdk-provenance"
           mkdir -m 700 "$provenance_dir"
-          bounded() {
+          source scripts/capture-diagnostics.sh
+          capture_command() {
             local stdout_path="$1" stderr_path="$2"
             shift 2
-            : > "$stdout_path"
-            : > "$stderr_path"
-            python3 scripts/bounded-command.py \
-              --stdout-limit 131072 --stderr-limit 131072 \
-              --stdout-path "$stdout_path" --stderr-path "$stderr_path" \
-              --timeout 120 -- "$@"
+            local status
+            if run_captured "$stdout_path" "$stderr_path" 120 "$@"; then
+              status=0
+            else
+              status="$?"
+            fi
+            finish_capture "$status" true "$stdout_path" "$stderr_path"
+          }
+          replay_api_failure() {
+            local body="$1" error="$2" status replay_status=0 semantic_output="$1.semantic.out" semantic_error="$1.semantic.err"
+            shift 2
+            if "$@" >"$semantic_output" 2>"$semantic_error"; then
+              if cat "$semantic_error" >&2; then :; else replay_status=1; fi
+              if cat "$semantic_output"; then :; else replay_status=1; fi
+              return "$replay_status"
+            else
+              status="$?"
+            fi
+            replay_capture "$body" "$error" true "$semantic_output" "$semantic_error" || replay_status="$?"
+            return "$status"
           }
           retry_registry() {
-            local stdout_path="$1" stderr_path="$2" status attempt
+            local stdout_path="$1" stderr_path="$2" status attempt attempt_stdout attempt_stderr replay_failed=0
             shift 2
+            mkdir -p "$stdout_path.attempts"
             for attempt in $(seq 1 12); do
-              set +e
-              bounded "$stdout_path" "$stderr_path" "$@"
-              status="$?"
-              set -e
-              if test "$status" = 0 && test ! -s "$stderr_path"; then
+              attempt_stdout="$stdout_path.attempts/$attempt.out"
+              attempt_stderr="$stdout_path.attempts/$attempt.err"
+              if run_captured "$attempt_stdout" "$attempt_stderr" 120 "$@"; then
+                status=0
+              else
+                status="$?"
+              fi
+              cp "$attempt_stdout" "$stdout_path"
+              cp "$attempt_stderr" "$stderr_path"
+              if test "$status" = 0; then
+                if replay_capture "$attempt_stdout" "$attempt_stderr" false; then :; else
+                  replay_failed=1
+                fi
+                if test "$replay_failed" -ne 0; then return 1; fi
                 return 0
               fi
-              if test "$attempt" = 12; then
-                cat "$stdout_path" >&2
-                cat "$stderr_path" >&2
-                if test "$status" = 0; then
-                  return 1
-                fi
-                return "$status"
+              if replay_capture "$attempt_stdout" "$attempt_stderr"; then :; else
+                replay_failed=1
               fi
+              if test "$attempt" = 12; then return "$status"; fi
               sleep 10
             done
           }
           dist="$provenance_dir/dist.json"
           dist_err="$provenance_dir/dist.err"
           retry_registry "$dist" "$dist_err" npm view \
-            "@telecrypt-io/storage@$sdk_version" dist --json --loglevel=error
+            "@telecrypt-io/storage@$sdk_version" dist --json
           if grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$dist" "$dist_err"; then
+            replay_capture "$dist" "$dist_err"
             exit 1
           fi
-          attestations_url="$(node - "$dist" "$sdk_version" <<'NODE'
+          attestations_url="$(replay_api_failure "$dist" "$dist_err" node - "$dist" "$sdk_version" <<'NODE'
           const fs = require("node:fs");
           const dist = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           const version = process.argv[3];
@@ -201,8 +223,9 @@ jobs:
           attestations="$provenance_dir/attestations.json"
           attestations_err="$provenance_dir/attestations.err"
           retry_registry "$attestations" "$attestations_err" curl --proto '=https' --tlsv1.2 \
-            --silent --show-error --fail-with-body --max-time 120 --connect-timeout 20 "$attestations_url"
+            --show-error --fail-with-body --max-time 120 --connect-timeout 20 "$attestations_url"
           if grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$attestations" "$attestations_err"; then
+            replay_capture "$attestations" "$attestations_err"
             exit 1
           fi
 
@@ -214,17 +237,23 @@ jobs:
           audit_install_out="$provenance_dir/audit-install.out"
           audit_install_err="$provenance_dir/audit-install.err"
           # shellcheck disable=SC2016
-          bounded "$audit_install_out" "$audit_install_err" bash -c 'cd "$1" && npm install --ignore-scripts --no-fund --no-audit --loglevel=error' bash "$audit"
-          test ! -s "$audit_install_err"
+          capture_command "$audit_install_out" "$audit_install_err" bash -c 'cd "$1" && npm install --ignore-scripts --no-fund --no-audit' bash "$audit"
           if grep -Eqi '(^|[^[:alnum:]_])warn(ing)?([^[:alnum:]_]|$)' "$audit_install_out" "$audit_install_err"; then
+            replay_capture "$audit_install_out" "$audit_install_err"
             exit 1
           fi
           audit_out="$provenance_dir/audit.out"
           audit_err="$provenance_dir/audit.err"
           # shellcheck disable=SC2016
-          bounded "$audit_out" "$audit_err" bash -c 'cd "$1" && npm audit signatures --loglevel=error' bash "$audit"
-          test ! -s "$audit_err" -a -s "$audit_out"
-          grep -Eqi 'verified attestations?' "$audit_out"
+          capture_command "$audit_out" "$audit_err" bash -c 'cd "$1" && npm audit signatures' bash "$audit"
+          if ! test -s "$audit_out"; then
+            replay_capture "$audit_out" "$audit_err"
+            exit 1
+          fi
+          if ! grep -Eqi 'verified attestations?' "$audit_out"; then
+            replay_capture "$audit_out" "$audit_err"
+            exit 1
+          fi
 
           # Bind the audited registry bytes to this consumer's exact lock entry.
           # The SDK checkout remains the sole authority for npm/SLSA provenance.
@@ -233,11 +262,17 @@ jobs:
           sdk_tag_commit="$(awk -F= '$1 == "tag_commit" { print $2 }' release/sdk-source-identity.txt)"
           provenance_out="$provenance_dir/provenance.out"
           provenance_err="$provenance_dir/provenance.err"
-          bounded "$provenance_out" "$provenance_err" node storage-sdk/scripts/verify-npm-provenance.mjs \
+          capture_command "$provenance_out" "$provenance_err" node storage-sdk/scripts/verify-npm-provenance.mjs \
             --dist "$dist" --attestations "$attestations" --archive "$sdk_archive" \
             --package '@telecrypt-io/storage' --version "$sdk_version" --tag "$SDK_REF" --commit "$sdk_tag_commit"
-          test ! -s "$provenance_err" -a -s "$provenance_out"
-          grep -Fq 'verified npm provenance' "$provenance_out"
+          if ! test -s "$provenance_out"; then
+            replay_capture "$provenance_out" "$provenance_err"
+            exit 1
+          fi
+          if ! grep -Fq 'verified npm provenance' "$provenance_out"; then
+            replay_capture "$provenance_out" "$provenance_err"
+            exit 1
+          fi
 
       - name: Require exact package and lockfile versions
         run: |
@@ -284,10 +319,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
+          source scripts/capture-diagnostics.sh
           : > THIRD-PARTY-LICENSES.txt
           trap 'rm -f -- THIRD-PARTY-LICENSES.txt' EXIT
-          timeout 120s npm pack --ignore-scripts --dry-run --json > release/pack.json
-          node --input-type=module <<'NODE'
+          if run_captured release/pack.json release/pack.err 120 npm pack --ignore-scripts --dry-run --json; then status=0; else status="$?"; fi
+          finish_capture "$status" true release/pack.json release/pack.err
+          test "$status" = 0
+          require_capture release/pack.json release/pack.err node --input-type=module <<'NODE'
           import fs from "node:fs";
           const metadata = JSON.parse(fs.readFileSync("release/pack.json", "utf8"));
           if (!Array.isArray(metadata) || metadata.length !== 1 || !Array.isArray(metadata[0]?.files)) {
@@ -304,18 +342,19 @@ jobs:
           node scripts/validateReleaseArchive.mjs release/archive-contents.txt package-lock.json release/THIRD-PARTY-LICENSES.txt
           test -s release/THIRD-PARTY-LICENSES.txt
           cp -- release/THIRD-PARTY-LICENSES.txt THIRD-PARTY-LICENSES.txt
-          timeout 120s npm pack --ignore-scripts --pack-destination release > release/npm-pack-output.txt
+          timeout 120s npm pack --ignore-scripts --pack-destination release
           packed_archive="$(find release -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -n "$packed_archive"
           mv -- "$packed_archive" "release/${GITHUB_REF_NAME}.tgz"
           test "$(stat -c%s "release/${GITHUB_REF_NAME}.tgz")" -le 268435456
-          # Stop tar as soon as the bounded listing sink fills; redirecting
-          # tar directly to a file would permit an unbounded listing.
-          timeout 30s tar -tzf "release/${GITHUB_REF_NAME}.tgz" |
-            head -c 67108864 > release/archive-contents-final.txt
+          if run_captured release/archive-contents-final.txt release/archive-contents-final.err 30 tar -tzf "release/${GITHUB_REF_NAME}.tgz"; then status=0; else status="$?"; fi
+          finish_capture "$status" true release/archive-contents-final.txt release/archive-contents-final.err
+          test "$status" = 0
           node scripts/validateReleaseArchive.mjs release/archive-contents-final.txt package-lock.json release/THIRD-PARTY-LICENSES-final.txt "release/${GITHUB_REF_NAME}.tgz"
           cmp -- release/THIRD-PARTY-LICENSES.txt release/THIRD-PARTY-LICENSES-final.txt
-          timeout 30s tar -xOzf "release/${GITHUB_REF_NAME}.tgz" package/THIRD-PARTY-LICENSES.txt > release/THIRD-PARTY-LICENSES-archive.txt
+          if run_captured release/THIRD-PARTY-LICENSES-archive.txt release/THIRD-PARTY-LICENSES-archive.err 30 tar -xOzf "release/${GITHUB_REF_NAME}.tgz" package/THIRD-PARTY-LICENSES.txt; then status=0; else status="$?"; fi
+          finish_capture "$status" true release/THIRD-PARTY-LICENSES-archive.txt release/THIRD-PARTY-LICENSES-archive.err
+          test "$status" = 0
           cmp -- release/THIRD-PARTY-LICENSES.txt release/THIRD-PARTY-LICENSES-archive.txt
           archive_sha256="$(sha256sum "release/${GITHUB_REF_NAME}.tgz" | awk '{ print $1 }')"
           printf 'archive_sha256=%s\n' "$archive_sha256" >> release/source-identity.txt
@@ -366,7 +405,7 @@ jobs:
           bash scripts/hardenReleaseTransport.sh . https://github.com/TeleCrypt-io/storage-cli.git
           node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
           test "$(npm --version)" = "11.19.0"
-          timeout 120s git fetch --quiet --force --no-tags origin \
+          timeout 120s git fetch --force --no-tags origin \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           tag_ref="refs/tags/$GITHUB_REF_NAME"
           test "$(git cat-file -t "$tag_ref")" = tag
@@ -388,25 +427,33 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -m 700 "$GH_CONFIG_DIR"
-          bounded_gh() {
-            output=$1
-            error=$2
+          source scripts/capture-diagnostics.sh
+          capture_gh() {
+            local output="$1" error="$2" status
             shift 2
-            : > "$output"
-            : > "$error"
-            set +e
-            bash scripts/bounded-command.sh 1048576 1048576 "$output" "$error" 30 gh "$@"
-            status=$?
-            set -e
-            if [ "$(wc -c < "$output")" -gt 1048576 ] || [ "$(wc -c < "$error")" -gt 1048576 ]; then
-              echo "GitHub CLI output exceeded the 1 MiB bound" >&2
-              return 1
+            if run_captured "$output" "$error" 30 gh "$@"; then
+              status=0
+            else
+              status="$?"
             fi
+            finish_capture "$status" true "$output" "$error"
+          }
+          replay_api_failure() {
+            local body="$1" error="$2" status replay_status=0 semantic_output="$1.semantic.out" semantic_error="$1.semantic.err"
+            shift 2
+            if "$@" >"$semantic_output" 2>"$semantic_error"; then
+              if cat "$semantic_error" >&2; then :; else replay_status=1; fi
+              if cat "$semantic_output"; then :; else replay_status=1; fi
+              return "$replay_status"
+            else
+              status="$?"
+            fi
+            replay_capture "$body" "$error" true "$semantic_output" "$semantic_error" || replay_status="$?"
             return "$status"
           }
           verify_mutation_boundary() {
             local boundary_tag_ref="refs/tags/$GITHUB_REF_NAME"
-            timeout 120s git fetch --quiet --force --no-tags origin \
+            timeout 120s git fetch --force --no-tags origin \
               "$boundary_tag_ref:$boundary_tag_ref"
             test "$(git cat-file -t "$boundary_tag_ref")" = tag
             local boundary_tag_object
@@ -453,7 +500,7 @@ jobs:
           # ref, and the exact current main tip immediately before any Release
           # API mutation. The build job's identity files must agree exactly.
           node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
-          timeout 120s git fetch --quiet --force --no-tags origin \
+          timeout 120s git fetch --force --no-tags origin \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           tag_ref="refs/tags/$GITHUB_REF_NAME"
           test "$(git cat-file -t "$tag_ref")" = tag
@@ -509,15 +556,21 @@ jobs:
           test "$(wc -l <<<"$remote_sdk_commit")" = 1
           test "$(awk '{ print $1 }' <<<"$remote_sdk_commit")" = "$sdk_tag_commit"
 
-          timeout 30s tar -tzf "$archive" |
-            head -c 67108864 > "$RUNNER_TEMP/storage-cli-release-contents.txt"
+          source scripts/capture-diagnostics.sh
+          if run_captured "$RUNNER_TEMP/storage-cli-release-contents.txt" "$RUNNER_TEMP/storage-cli-release-contents.err" 30 tar -tzf "$archive"; then status=0; else status="$?"; fi
+          finish_capture "$status" true "$RUNNER_TEMP/storage-cli-release-contents.txt" "$RUNNER_TEMP/storage-cli-release-contents.err"
+          test "$status" = 0
           timeout 120s node scripts/validateReleaseArchive.mjs \
             "$RUNNER_TEMP/storage-cli-release-contents.txt" package-lock.json \
             "$RUNNER_TEMP/storage-cli-release-inventory.txt" "$archive"
-          timeout 30s tar -xOzf "$archive" package/THIRD-PARTY-LICENSES.txt > "$RUNNER_TEMP/storage-cli-release-inventory-archive.txt"
+          if run_captured "$RUNNER_TEMP/storage-cli-release-inventory-archive.txt" "$RUNNER_TEMP/storage-cli-release-inventory-archive.err" 30 tar -xOzf "$archive" package/THIRD-PARTY-LICENSES.txt; then status=0; else status="$?"; fi
+          finish_capture "$status" true "$RUNNER_TEMP/storage-cli-release-inventory-archive.txt" "$RUNNER_TEMP/storage-cli-release-inventory-archive.err"
+          test "$status" = 0
           cmp -- "$RUNNER_TEMP/storage-cli-release-inventory.txt" "$RUNNER_TEMP/storage-cli-release-inventory-archive.txt"
-          timeout 30s tar -xOzf "$archive" package/package.json > "$RUNNER_TEMP/storage-cli-release-package.json"
-          node --input-type=module - "$RUNNER_TEMP/storage-cli-release-package.json" <<'NODE'
+          if run_captured "$RUNNER_TEMP/storage-cli-release-package.json" "$RUNNER_TEMP/storage-cli-release-package.err" 30 tar -xOzf "$archive" package/package.json; then status=0; else status="$?"; fi
+          finish_capture "$status" true "$RUNNER_TEMP/storage-cli-release-package.json" "$RUNNER_TEMP/storage-cli-release-package.err"
+          test "$status" = 0
+          require_capture "$RUNNER_TEMP/storage-cli-release-package.json" "$RUNNER_TEMP/storage-cli-release-package.err" node --input-type=module - "$RUNNER_TEMP/storage-cli-release-package.json" <<'NODE'
           import fs from "node:fs";
           const packageJson = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           const expected = process.env.GITHUB_REF_NAME.slice("storage-cli-v".length);
@@ -527,16 +580,17 @@ jobs:
           release_endpoint="repos/$GITHUB_REPOSITORY/releases"
           release_json="$RUNNER_TEMP/storage-cli-release.json"
           release_list_json="$RUNNER_TEMP/storage-cli-release-list.json"
+          release_list_lines="$RUNNER_TEMP/storage-cli-release-list.jsonl"
           release_list_error="$RUNNER_TEMP/storage-cli-release-list-error.txt"
           release_create_json="$RUNNER_TEMP/storage-cli-release-create.json"
           release_create_error="$RUNNER_TEMP/storage-cli-release-create-error.txt"
           release_get_error="$RUNNER_TEMP/storage-cli-release-get-error.txt"
           fetch_release_state() {
-            bounded_gh "$release_list_json" "$release_list_error" \
-              api --paginate --jq '.[] | @json' --hostname github.com \
+            capture_gh "$release_list_json" "$release_list_error" \
+              api --paginate --hostname github.com \
               --header "X-GitHub-Api-Version: 2026-03-10" "${release_endpoint}?per_page=100"
-            test ! -s "$release_list_error"
-            node --input-type=module - "$release_list_json" "$release_json" "$archive" <<'NODE'
+            replay_api_failure "$release_list_json" "$release_list_error" jq -c -s 'map(.[])[]' "$release_list_json" >"$release_list_lines"
+            replay_api_failure "$release_list_json" "$release_list_error" node --input-type=module - "$release_list_lines" "$release_json" "$archive" <<'NODE'
           import fs from "node:fs";
           import { createHash } from "node:crypto";
           import { classifyExistingDraft, findReleaseByTag, parseReleaseList } from "./scripts/releasePolicy.mjs";
@@ -561,7 +615,7 @@ jobs:
           }
           set_release_resource_endpoint_from_json() {
             local release_path="$1"
-            release_id="$(node --input-type=module - "$release_path" <<'NODE'
+            release_id="$(replay_api_failure "$release_path" "$release_get_error" node --input-type=module - "$release_path" <<'NODE'
           import fs from "node:fs";
           const release = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           if (!release || typeof release !== "object" || Array.isArray(release) ||
@@ -577,10 +631,9 @@ jobs:
             set_release_resource_endpoint_from_json "$release_json"
           }
           fetch_release_by_id() {
-            bounded_gh "$release_json" "$release_get_error" \
+            capture_gh "$release_json" "$release_get_error" \
               api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_resource_endpoint"
-            test ! -s "$release_get_error"
-            node --input-type=module - "$release_json" "$archive" "$release_id" <<'NODE'
+            replay_api_failure "$release_json" "$release_get_error" node --input-type=module - "$release_json" "$archive" "$release_id" <<'NODE'
           import fs from "node:fs";
           import { createHash } from "node:crypto";
           import { classifyExistingDraft } from "./scripts/releasePolicy.mjs";
@@ -601,7 +654,6 @@ jobs:
           }
           release_state="missing"
           if ! release_state="$(fetch_release_state)"; then
-            cat "$release_list_error" >&2
             echo "cannot prove whether the GitHub Release exists" >&2
             exit 1
           fi
@@ -613,7 +665,7 @@ jobs:
           # revalidated after the read-only Release probe.
           verify_mutation_boundary
           if [ "$release_state" = "missing" ]; then
-            bounded_gh "$release_create_json" "$release_create_error" \
+            capture_gh "$release_create_json" "$release_create_error" \
               api --hostname github.com --method POST \
               --header "X-GitHub-Api-Version: 2026-03-10" \
               --raw-field "tag_name=$GITHUB_REF_NAME" \
@@ -623,10 +675,8 @@ jobs:
               --field prerelease=false \
               --field generate_release_notes=true \
               "$release_endpoint"
-            test ! -s "$release_create_error"
             set_release_resource_endpoint_from_json "$release_create_json"
             if ! release_state="$(fetch_release_by_id)"; then
-              cat "$release_get_error" >&2
               echo "cannot prove whether the newly created GitHub Release matches the create response" >&2
               exit 1
             fi
@@ -638,24 +688,22 @@ jobs:
           if [ "$release_state" = "draft-empty" ]; then
             verify_mutation_boundary
             archive_name="${archive##*/}"
-            bounded_gh "$RUNNER_TEMP/storage-cli-release-upload.out" "$RUNNER_TEMP/storage-cli-release-upload.err" \
+            capture_gh "$RUNNER_TEMP/storage-cli-release-upload.out" "$RUNNER_TEMP/storage-cli-release-upload.err" \
               api --method POST \
               --header "Content-Type: application/gzip" \
               --input "$archive" "https://uploads.github.com/${release_resource_endpoint}/assets?name=${archive_name}"
-            test ! -s "$RUNNER_TEMP/storage-cli-release-upload.err"
           elif [ "$release_state" != "draft-exact" ]; then
             echo "unexpected Release state: $release_state" >&2
             exit 1
           fi
 
           if ! release_state="$(fetch_release_by_id)"; then
-            cat "$release_get_error" >&2
             echo "cannot prove whether the GitHub Release exists after upload" >&2
             exit 1
           fi
           test "$release_state" = "draft-exact"
           digest="sha256:$(sha256sum "$archive" | awk '{print $1}')"
-          node --input-type=module - "$release_json" "$archive" "$digest" <<'NODE'
+          replay_api_failure "$release_json" "$release_get_error" node --input-type=module - "$release_json" "$archive" "$digest" <<'NODE'
           import fs from "node:fs";
           import { validateDraft } from "./scripts/releasePolicy.mjs";
           const [releasePath, archivePath, digest] = process.argv.slice(2);
@@ -672,9 +720,9 @@ jobs:
             # validate the mutable draft as the final read-only operation before
             # publication. No other network operation occurs before the PATCH.
             verify_mutation_boundary
-            bounded_gh "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$RUNNER_TEMP/storage-cli-release-before-publish.err" \
+            capture_gh "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$RUNNER_TEMP/storage-cli-release-before-publish.err" \
               api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_resource_endpoint"
-            node --input-type=module - "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$archive" "$digest" <<'NODE'
+            replay_api_failure "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$RUNNER_TEMP/storage-cli-release-before-publish.err" node --input-type=module - "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$archive" "$digest" <<'NODE'
           import fs from "node:fs";
           import { validateDraft } from "./scripts/releasePolicy.mjs";
           const [releasePath, archivePath, digest] = process.argv.slice(2);
@@ -691,13 +739,13 @@ jobs:
           # the final draft/asset validation and irreversible publication.
           verify_publish_boundary
 
-          bounded_gh "$RUNNER_TEMP/storage-cli-published-release.json" "$RUNNER_TEMP/storage-cli-publish.err" \
+          capture_gh "$RUNNER_TEMP/storage-cli-published-release.json" "$RUNNER_TEMP/storage-cli-publish.err" \
             api --hostname github.com --method PATCH \
             --header "X-GitHub-Api-Version: 2026-03-10" \
             -F draft=false "$release_resource_endpoint"
-          bounded_gh "$RUNNER_TEMP/storage-cli-final-release.json" "$RUNNER_TEMP/storage-cli-final-release.err" \
+          capture_gh "$RUNNER_TEMP/storage-cli-final-release.json" "$RUNNER_TEMP/storage-cli-final-release.err" \
             api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_resource_endpoint"
-          node --input-type=module - "$RUNNER_TEMP/storage-cli-final-release.json" "$archive" "$digest" <<'NODE'
+          replay_api_failure "$RUNNER_TEMP/storage-cli-final-release.json" "$RUNNER_TEMP/storage-cli-final-release.err" node --input-type=module - "$RUNNER_TEMP/storage-cli-final-release.json" "$archive" "$digest" <<'NODE'
           import fs from "node:fs";
           import { validatePublished } from "./scripts/releasePolicy.mjs";
           const [releasePath, archivePath, digest] = process.argv.slice(2);

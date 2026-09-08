@@ -80,10 +80,14 @@ describe("server logout", () => {
   });
 
   it("does not follow a logout redirect carrying the bearer token", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(exactResponse(
+      "https://backend.telecrypt.io/redirect",
+      null,
+      { status: 302 },
+    ));
     vi.stubGlobal("fetch", fetchMock);
 
-    await requestServerLogout(session);
+    await expect(requestServerLogout(session)).rejects.toThrow("server logout redirected unexpectedly");
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://backend.telecrypt.io/_matrix/client/v3/logout",
@@ -91,11 +95,80 @@ describe("server logout", () => {
     );
   });
 
+  it("bounds cleanup of an acquired redirected response body", async () => {
+    vi.useFakeTimers();
+    try {
+      let cancelCalled = false;
+      const body = new ReadableStream<Uint8Array>({
+        cancel: () => {
+          cancelCalled = true;
+          return new Promise<void>(() => {});
+        },
+      });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(
+        "https://backend.telecrypt.io/redirect",
+        body,
+        { status: 302 },
+      )));
+
+      const pending = requestServerLogout(session);
+      const failure = expect(pending).rejects.toThrow("server logout redirected unexpectedly");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await failure;
+      expect(cancelCalled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("surfaces HTTP failure without exposing the token", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, null, { status: 401 })));
 
     await expect(requestServerLogout(session)).rejects.toThrow("server logout failed (HTTP 401)");
     await expect(requestServerLogout(session)).rejects.not.toThrow("secret-access-token");
+  });
+
+  it("retains a non-success response body as the failure cause", async () => {
+    const body = {
+      errcode: "M_LIMIT_EXCEEDED",
+      error: "retry later",
+      details: "access_token=server-secret contact alice@example.test",
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, JSON.stringify(body), { status: 429 })));
+
+    let failure: unknown;
+    try {
+      await requestServerLogout({ ...session, refreshToken: undefined });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toHaveProperty("message", "server logout failed (HTTP 429)");
+    expect((failure as Error).cause).toBeInstanceOf(Error);
+    expect(((failure as Error).cause as Error).message).toContain("M_LIMIT_EXCEEDED");
+    expect(((failure as Error).cause as Error).message).toContain("retry later");
+    expect(((failure as Error).cause as Error).message).not.toContain("server-secret");
+    expect(((failure as Error).cause as Error).message).not.toContain("alice@example.test");
+  });
+
+  it("retains malformed response JSON as the parse cause", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, "not-json", { status: 200 })));
+
+    let failure: unknown;
+    try {
+      await requestServerLogout(session);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toHaveProperty("message", "server logout response is not valid JSON");
+    expect(failure).toHaveProperty("cause");
+    expect((failure as Error).cause).toBeInstanceOf(AggregateError);
+    expect(((failure as Error).cause as AggregateError).errors[0]).toBeInstanceOf(SyntaxError);
+    expect(((failure as Error).cause as AggregateError).errors[1]).toMatchObject({
+      message: "server logout response body: not-json",
+    });
   });
 
   it("treats Matrix's explicit unknown token as final only when no refresh grant remains", async () => {
@@ -199,47 +272,8 @@ describe("server logout", () => {
 
       await vi.advanceTimersByTimeAsync(5_000);
       expect(vi.getTimerCount()).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("persists credentials refreshed during the bounded logout cleanup join", async () => {
-    vi.useFakeTimers();
-    try {
-      const unknown = exactResponse(LOGOUT_URL, JSON.stringify({ errcode: "M_UNKNOWN_TOKEN" }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      });
-      const refreshed = exactResponse(TOKEN_URL, JSON.stringify({ access_token: "late-access" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-      const success = exactResponse(LOGOUT_URL, null, { status: 200 });
-      let resolveRefresh!: (response: Response) => void;
-      const fetchMock = vi.fn()
-        .mockResolvedValueOnce(unknown)
-        .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveRefresh = resolve; }))
-        .mockResolvedValueOnce(success);
-      const onRefreshed = vi.fn();
-      vi.stubGlobal("fetch", fetchMock);
-
-      const pending = requestServerLogout(session, 10, undefined, onRefreshed);
-      for (let index = 0; index < 5; index += 1) await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      const failure = expect(pending).rejects.toThrow("server logout request timed out");
-
-      await vi.advanceTimersByTimeAsync(10);
-      resolveRefresh(refreshed);
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(5_000);
-
-      await failure;
-      expect(onRefreshed).toHaveBeenCalledWith(expect.objectContaining({
-        accessToken: "late-access",
-        refreshToken: session.refreshToken,
-      }));
+      const releasedReader = body.getReader();
+      releasedReader.releaseLock();
     } finally {
       vi.useRealTimers();
     }
@@ -297,12 +331,12 @@ describe("server logout", () => {
     }
   });
 
-  it("bounds and aborts an oversized logout response", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, "x".repeat(64 * 1024 + 1), { status: 200 }));
+  it("consumes a large successful logout response without a diagnostic-size rejection", async () => {
+    const body = JSON.stringify({ detail: "x".repeat(64 * 1024 + 1) });
+    const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, body, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(requestServerLogout(session)).rejects.toThrow("response exceeds the output limit");
-    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
+    await expect(requestServerLogout(session)).resolves.toBeUndefined();
   });
 
   it("retains local credentials when remote revocation fails", async () => {

@@ -145,11 +145,11 @@ describe("CLI", () => {
     writeSession(session, dir);
     const lock = acquireProfileLock(dir);
     try {
-      const blocked = await runCli(["storage", "whoami", "--json"], {
+      const blocked = await cliJson(["storage", "whoami"], {
         TELECRYPT_IO_STORAGE_HOME: dir,
       });
       expect(blocked.code).not.toBe(0);
-      expect(JSON.parse(blocked.stderr)).toEqual({
+      expect(blocked.json).toEqual({
         error: "profile is busy; retry after the other storage command exits",
       });
       expect(blocked.stderr).not.toContain(session.accessToken);
@@ -190,12 +190,12 @@ describe("CLI", () => {
       };
     writeSession(session, dir);
 
-      const result = await runCli(["storage", "logout", "--json"], {
+      const result = await cliJson(["storage", "logout"], {
         TELECRYPT_IO_STORAGE_HOME: dir,
       });
 
       expect(result.code).not.toBe(0);
-      expect(JSON.parse(result.stderr)).toEqual({ error: "server logout failed (HTTP 503)" });
+      expect(result.json).toEqual({ error: "server logout failed (HTTP 503)" });
       expect(result.stderr).not.toContain(session.accessToken);
       expect(fs.existsSync(sessionPath(dir))).toBe(true);
     } finally {
@@ -541,7 +541,7 @@ describe("CLI", () => {
     60000,
   );
 
-  describe("CLI.6 error paths: clean non-zero exit + JSON error, no stack traces", () => {
+  describe("CLI.6 error paths: clean non-zero exit + JSON error", () => {
     it("renders commander parse errors as one JSON diagnostic", async () => {
       const dir = freshProfileDir("json-parse-error");
       const res = await cliJson(["storage", "command-that-does-not-exist"], {
@@ -550,7 +550,7 @@ describe("CLI", () => {
       expect(res.code).not.toBe(0);
       expect(res.stdout.trim()).toBe("");
       expect(typeof res.json.error).toBe("string");
-      expect(res.stderr.trim().startsWith("{")).toBe(true);
+      expect(res.stderr).toContain(JSON.stringify(res.json));
     });
 
     it("login rejects a local endpoint without Matrix OIDC discovery", async () => {
@@ -564,7 +564,6 @@ describe("CLI", () => {
       expect(res.code).not.toBe(0);
       expect(typeof res.json.error).toBe("string");
       expect(res.stdout.trim()).toBe("");
-      expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
     });
 
     it("garbage recovery key", async () => {
@@ -579,7 +578,6 @@ describe("CLI", () => {
       );
       expect(res.code).not.toBe(0);
       expect(typeof res.json.error).toBe("string");
-      expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
     });
 
     it(
@@ -598,7 +596,6 @@ describe("CLI", () => {
         );
         expect(res.code).not.toBe(0);
         expect(typeof res.json.error).toBe("string");
-        expect(() => JSON.parse(res.stderr.trim())).not.toThrow();
       },
       // A fresh CLI process must initialize crypto and sync with the
       // disposable test server. That server may be slow; revisit this 60s
@@ -613,11 +610,11 @@ describe("CLI", () => {
       expect(res.json.error).toBe("not logged in");
     });
 
-    it("non-json mode also exits non-zero with a clean single-line error, no stack trace", async () => {
+    it("non-json mode also exits non-zero with a final error line", async () => {
       const dir = freshProfileDir("textmode");
       const result = await runCli(["storage", "whoami"], { TELECRYPT_IO_STORAGE_HOME: dir });
       expect(result.code).not.toBe(0);
-      expect(result.stderr.trim()).toBe("Error: not logged in");
+      expect(result.stderr.trim().split(/\r?\n/u).at(-1)).toBe("Error: not logged in");
     });
   });
 });

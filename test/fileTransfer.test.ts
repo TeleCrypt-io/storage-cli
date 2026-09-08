@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readBoundedInput, writeBoundedDownload } from "../src/fileTransfer.js";
+import { readBoundedInput, writeDownload } from "../src/fileTransfer.js";
 import { MAX_MEDIA_FILE_BYTES } from "../src/limits.js";
 
 const directories: string[] = [];
@@ -33,17 +33,15 @@ describe("bounded file transfer paths", () => {
     expect(() => readBoundedInput(oversized)).toThrow("input file exceeds the 128 MiB limit");
   });
 
-  it("accepts an exact 128 MiB download and rejects an oversized result before touching disk", () => {
+  it("writes downloads without imposing a second media-size limit", () => {
     const dir = directory();
     const destination = path.join(dir, "exact.bin");
-    writeBoundedDownload(destination, Buffer.alloc(MAX_MEDIA_FILE_BYTES));
+    writeDownload(destination, Buffer.alloc(MAX_MEDIA_FILE_BYTES));
     expect(fs.statSync(destination).size).toBe(MAX_MEDIA_FILE_BYTES);
 
-    expect(() => writeBoundedDownload(
-      path.join(dir, "oversized.bin"),
-      { byteLength: MAX_MEDIA_FILE_BYTES + 1 } as Uint8Array,
-    )).toThrow("download exceeds the 128 MiB limit");
-    expect(fs.existsSync(path.join(dir, "oversized.bin"))).toBe(false);
+    const oversized = path.join(dir, "oversized.bin");
+    writeDownload(oversized, Buffer.alloc(MAX_MEDIA_FILE_BYTES + 1));
+    expect(fs.existsSync(oversized)).toBe(true);
   });
 
   it("reads through a stable descriptor and writes an atomic destination", () => {
@@ -54,7 +52,7 @@ describe("bounded file transfer paths", () => {
     fs.writeFileSync(source, "source bytes");
 
     expect(readBoundedInput(source).toString()).toBe("source bytes");
-    writeBoundedDownload(destination, Buffer.from("download bytes"));
+    writeDownload(destination, Buffer.from("download bytes"));
     expect(fs.readFileSync(destination, "utf8")).toBe("download bytes");
   });
 
@@ -82,6 +80,124 @@ describe("bounded file transfer paths", () => {
     expect(() => readBoundedInput(source)).toThrow("input file changed while it was being read");
   });
 
+  it("closes the parent descriptor when destination setup rejects the name", () => {
+    const dir = directory();
+    const openSync = vi.spyOn(fs, "openSync");
+    const closeSync = vi.spyOn(fs, "closeSync");
+
+    expect(() => writeDownload(`${dir}/.`, Buffer.from("download bytes"))).toThrow(
+      "file path must name a regular file",
+    );
+
+    const opened = openSync.mock.results
+      .filter((result) => result.type === "return")
+      .map((result) => result.value);
+    const parentFd = opened.at(-1);
+    expect(parentFd).toBeDefined();
+    expect(closeSync).toHaveBeenCalledWith(parentFd);
+  });
+
+  it("preserves the read failure and every descriptor cleanup failure", () => {
+    const dir = directory();
+    const source = path.join(dir, "oversized.bin");
+    fs.writeFileSync(source, Buffer.alloc(0));
+    fs.truncateSync(source, MAX_MEDIA_FILE_BYTES + 1);
+    const originalCloseSync = fs.closeSync;
+    let closeCalls = 0;
+    vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
+      closeCalls += 1;
+      if (closeCalls === 3 || closeCalls === 4) {
+        originalCloseSync(fd);
+        throw new Error(`close failure ${closeCalls}`);
+      }
+      return originalCloseSync(fd);
+    });
+
+    let failure: unknown;
+    try {
+      readBoundedInput(source);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors.map(String)).toEqual([
+      "Error: input file exceeds the 128 MiB limit",
+      "Error: close failure 3",
+      "Error: close failure 4",
+    ]);
+  });
+
+  it("does not hide a replacement-descriptor close failure", () => {
+    const dir = directory();
+    const source = path.join(dir, "source.txt");
+    fs.writeFileSync(source, "source bytes");
+    const originalCloseSync = fs.closeSync;
+    let closeCalls = 0;
+    vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
+      closeCalls += 1;
+      if (closeCalls <= 2) {
+        originalCloseSync(fd);
+        throw new Error(`close failure ${closeCalls}`);
+      }
+      return originalCloseSync(fd);
+    });
+
+    let failure: unknown;
+    try {
+      readBoundedInput(source);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors.map(String)).toEqual([
+      "Error: close failure 1",
+      "Error: close failure 2",
+    ]);
+  });
+
+  it("preserves the write failure and every independent cleanup failure", () => {
+    const dir = directory();
+    const destination = path.join(dir, "download.bin");
+    const originalCloseSync = fs.closeSync;
+    let closeCalls = 0;
+    vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
+      closeCalls += 1;
+      if (closeCalls === 3 || closeCalls === 4) {
+        originalCloseSync(fd);
+        throw new Error(`close failure ${closeCalls}`);
+      }
+      return originalCloseSync(fd);
+    });
+    vi.spyOn(fs, "writeFileSync").mockImplementation(() => {
+      throw new Error("write failure");
+    });
+    const originalRmSync = fs.rmSync;
+    vi.spyOn(fs, "rmSync").mockImplementation(((target, options) => {
+      const result = originalRmSync(target, options);
+      if (typeof target === "string" && target.includes(".download.bin-")) {
+        throw new Error("temporary cleanup failure");
+      }
+      return result;
+    }) as typeof fs.rmSync);
+
+    let failure: unknown;
+    try {
+      writeDownload(destination, Buffer.from("download bytes"));
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors.map(String)).toEqual([
+      "Error: write failure",
+      "Error: close failure 3",
+      "Error: temporary cleanup failure",
+      "Error: close failure 4",
+    ]);
+  });
+
   it("fails closed when a parent component is a symlink", () => {
     const dir = directory();
     const real = path.join(dir, "real");
@@ -101,14 +217,14 @@ describe("bounded file transfer paths", () => {
     fs.writeFileSync(real, "keep");
     fs.symlinkSync(real, destination);
 
-    expect(() => writeBoundedDownload(destination, Buffer.from("replace"))).toThrow(
+    expect(() => writeDownload(destination, Buffer.from("replace"))).toThrow(
       "download destination already exists",
     );
     expect(fs.readFileSync(real, "utf8")).toBe("keep");
 
     fs.rmSync(destination);
     fs.writeFileSync(destination, "existing");
-    expect(() => writeBoundedDownload(destination, Buffer.from("replace"))).toThrow(
+    expect(() => writeDownload(destination, Buffer.from("replace"))).toThrow(
       "download destination already exists",
     );
     expect(fs.readFileSync(destination, "utf8")).toBe("existing");

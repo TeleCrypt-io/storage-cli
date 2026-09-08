@@ -806,4 +806,33 @@ describe("CLI OIDC endpoint validation", () => {
       "OIDC identity verification failed",
     );
   });
+
+  it("retains identity verification failures as causes", async () => {
+    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata());
+    vi.mocked(core.registerClient).mockResolvedValue("client-id");
+    vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
+      device_code: "device-code",
+      user_code: "ABC-123",
+      verification_uri: "https://backend.telecrypt.io/auth/device",
+      expires_in: 600,
+      interval: 1,
+    });
+    vi.mocked(core.waitForDeviceCodeLogin).mockResolvedValue({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      token_type: "Bearer",
+    });
+    const identityFailure = new Error("whoami transport failed");
+    vi.mocked(core.whoAmI).mockRejectedValue(identityFailure);
+
+    let failure: unknown;
+    try {
+      await runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toHaveProperty("message", "whoami transport failed");
+    expect(failure).toHaveProperty("cause", identityFailure);
+  });
 });

@@ -114,6 +114,30 @@ describe("fenced login transaction", () => {
     lock.release();
   });
 
+  it("retains initialization and revocation causes behind the safe recovery error", async () => {
+    profileDir();
+    const initializationFailure = new Error("crypto initialization failed");
+    const revocationFailure = new Error("offline");
+    mocks.runDeviceCodeLogin.mockResolvedValue(SESSION);
+    mocks.initStorageForNewSession.mockRejectedValue(initializationFailure);
+    mocks.requestServerLogout.mockRejectedValue(revocationFailure);
+
+    let failure: unknown;
+    try {
+      await loginAndInitialize(SESSION.homeserver, { onVerification: vi.fn() });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("server session retained for retry");
+    expect((failure as Error).cause).toBeInstanceOf(AggregateError);
+    const causes = ((failure as Error).cause as AggregateError).errors;
+    expect(causes).toContain(initializationFailure);
+    expect(causes).toContain(revocationFailure);
+    expect(causes).not.toContain(failure);
+  });
+
   it("revokes the latest persisted credentials after initialization refreshes the session", async () => {
     profileDir();
     const latest = {

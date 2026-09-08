@@ -21,6 +21,12 @@ vi.mock("@telecrypt-io/storage/core", async (importOriginal) => ({
 
 import { main } from "../src/index.js";
 
+function finalJson(stream: string): Record<string, unknown> {
+  const line = stream.trim().split(/\r?\n/u).filter(Boolean).at(-1);
+  if (!line) throw new Error("CLI stderr did not contain a JSON result");
+  return JSON.parse(line) as Record<string, unknown>;
+}
+
 describe("CLI authoritative deletion refusals", () => {
   afterEach(() => {
     mocks.deleteFolder.mockReset();
@@ -68,7 +74,7 @@ describe("CLI authoritative deletion refusals", () => {
 
     expect(process.exitCode).toBe(1);
     expect(stdout).toBe("");
-    expect(JSON.parse(stderr)).toEqual({
+    expect(finalJson(stderr)).toEqual({
       error: "cannot delete a nonempty vault or folder; delete its files and empty child folders first",
     });
     expect(mocks[operation]).toHaveBeenCalledWith(
@@ -76,6 +82,35 @@ describe("CLI authoritative deletion refusals", () => {
       treeId,
       { signal: expect.any(AbortSignal) },
     );
+    expect(mocks.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the SDK failure and storage cleanup failure together", async () => {
+    const storage = {};
+    mocks.openStorage.mockResolvedValue({
+      storage,
+      run: vi.fn(async (action: (signal: AbortSignal) => Promise<unknown>) =>
+        action(new AbortController().signal)),
+      close: mocks.close,
+    });
+    mocks.deleteVault.mockRejectedValue(new Error("delete failed"));
+    mocks.close.mockRejectedValue(new Error("cleanup failed"));
+
+    let stderr = "";
+    vi.spyOn(process.stdout, "write").mockImplementation(((_chunk: string | Uint8Array, callback?: () => void) => {
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array, callback?: () => void) => {
+      stderr += String(chunk);
+      callback?.();
+      return true;
+    }) as typeof process.stderr.write);
+
+    await main(["node", "telecrypt-io", "storage", "vault", "delete", "!vault:example.test", "--json"]);
+
+    expect(process.exitCode).toBe(1);
+    expect(finalJson(stderr)).toEqual({ error: "storage operation and cleanup failed; delete failed; cleanup failed" });
     expect(mocks.close).toHaveBeenCalledTimes(1);
   });
 });

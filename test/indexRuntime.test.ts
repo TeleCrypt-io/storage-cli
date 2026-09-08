@@ -40,11 +40,12 @@ describe("production CLI runtime", () => {
         callback?.();
         return true;
       }) as typeof process.stderr.write);
+      console.log("preserved SDK diagnostic");
 
       await main(["node", "telecrypt-io", "storage", "whoami", "--json"]);
 
       expect(process.exitCode).toBe(0);
-      expect(stderr.join("")).toBe("");
+      expect(stderr.join("")).toContain("preserved SDK diagnostic");
       expect(fs.existsSync(sessionPath(dir))).toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

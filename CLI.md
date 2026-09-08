@@ -58,9 +58,12 @@ TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-bob"   telecrypt-io stora
 ## `--json`
 
 Every command accepts `--json` (anywhere on the command line): machine-readable output on
-stdout on success, or `{"error": "..."}` on stderr with a non-zero exit code on failure. Without
-`--json`, commands print human-readable text instead. SDK-internal diagnostic logs are suppressed
-so they cannot corrupt either output stream.
+stdout on success, or a final `{"error": "..."}` line on stderr with a non-zero exit code on
+failure. Without `--json`, commands print human-readable text instead. SDK and command-parser
+diagnostic logs are also preserved on stderr, including nonempty warnings from successful internal
+checks, and may accompany the final error line; they never corrupt successful machine-readable
+stdout. Failure diagnostics retain complete secret-safe exception names, messages, causes,
+aggregate children, and stacks without truncation.
 
 ## Commands
 
@@ -120,10 +123,10 @@ telecrypt-io storage file delete <treeId> <fileId>
 Delete files before deleting their containing folder or vault. Folder and vault deletion refuses
 nonempty trees, including child folders; remove empty child folders explicitly first.
 
-File inputs and outputs are limited to 128 MiB. The CLI reads upload inputs through an anchored
-descriptor and rejects same-size mutation detected during the read; downloads use an atomic temporary
-file and refuse every existing destination, including regular files. Download bytes are held in memory,
-bounded to 128 MiB, and kept inside the command's 120-second cancellation boundary before atomic install.
+File inputs are limited to 128 MiB. The CLI reads upload inputs through an anchored descriptor and
+rejects same-size mutation detected during the read; downloads use an atomic temporary file and refuse
+every existing destination, including regular files. Download bytes are held in memory and kept inside
+the command's 120-second cancellation boundary before atomic install.
 
 ## Example: two participants sharing a vault
 

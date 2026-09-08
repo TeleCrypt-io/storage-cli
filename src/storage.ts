@@ -10,6 +10,7 @@ import {
   profileDir,
   type ProfileLock,
   readSession,
+  throwWithLockReleaseFailure,
   writeSessionUnlocked,
   Session,
 } from "./profile.js";
@@ -26,8 +27,8 @@ export interface OpenedStorage {
   storage: TeleCryptIOStorage;
   session: Session;
   /** Runs one SDK operation with a combined cancellation/deadline signal.
-   * Cancellation is joined for a bounded grace period before the command may
-   * snapshot or unlock; a non-cooperative operation fails closed. */
+   * Cancellation cleanup is joined for a bounded period before the command may
+   * snapshot or unlock; cancellation or deadline failure reaches the caller. */
   run: <T>(
     operation: (signal: AbortSignal) => Promise<T>,
     label: string,
@@ -117,7 +118,6 @@ async function boundedStorageOperation<T>(
   signal: AbortSignal,
   timeoutMessage: string,
   cancelOperation?: () => void | Promise<void>,
-  onLateSuccess?: (value: T) => void,
 ): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new StorageError("storage operation timeout must be positive");
@@ -126,7 +126,9 @@ async function boundedStorageOperation<T>(
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let boundaryError: StorageError | undefined;
-  let rejectBoundary!: (error: StorageError) => void;
+  let boundaryFailure: unknown;
+  let boundaryJoin: Promise<void> | undefined;
+  let rejectBoundary!: (error: unknown) => void;
   const boundary = new Promise<never>((_, reject) => {
     rejectBoundary = reject;
   });
@@ -137,12 +139,32 @@ async function boundedStorageOperation<T>(
     try {
       const cleanup = cancelOperation?.();
       const cleanupPromise = Promise.resolve(cleanup);
-      // Cancellation hooks are allowed to be asynchronous, but a broken SDK
-      // must not make the operation boundary wait forever for one. The
-      // bounded join also consumes a late rejection from the hook.
-      void settlePromiseWithin(cleanupPromise).then(() => rejectBoundary(error));
-    } catch {
-      rejectBoundary(error);
+      // Cancellation hooks are bounded so the operation boundary does not wait
+      // forever for cleanup.
+      boundaryJoin = settlePromiseWithin(cleanupPromise).then((settlement) => {
+        if (settlement.status === "rejected") {
+          boundaryFailure = new AggregateError(
+            [error, settlement.error],
+            `${error.message}; storage cleanup failed`,
+          );
+        } else if (settlement.status === "timeout") {
+          const cleanupError = new StorageError("storage cancellation cleanup timed out");
+          boundaryFailure = new AggregateError(
+            [error, cleanupError],
+            `${error.message}; storage cleanup failed`,
+          );
+        } else {
+          boundaryFailure = error;
+        }
+        rejectBoundary(boundaryFailure);
+      });
+    } catch (cleanupError) {
+      boundaryFailure = new AggregateError(
+        [error, cleanupError],
+        `${error.message}; storage cleanup failed`,
+      );
+      boundaryJoin = Promise.resolve();
+      rejectBoundary(boundaryFailure);
     }
   };
   const onAbort = () => stop(new StorageError("operation cancelled"));
@@ -153,19 +175,6 @@ async function boundedStorageOperation<T>(
     }
     return operation(controller.signal);
   });
-  operationPromise.catch(() => undefined);
-  // A storage factory can ignore the abort signal and resolve after this
-  // boundary has already returned. Stop that late client as soon as it
-  // appears; waiting only for the bounded join below would leave a result
-  // arriving after the join window running in the background.
-  operationPromise.then((value) => {
-    if (!boundaryError || !onLateSuccess) return;
-    try {
-      onLateSuccess(value);
-    } catch {
-      // The operation has already failed closed; late cleanup is best effort.
-    }
-  }, () => undefined);
   timer = setTimeout(() => stop(new StorageError(timeoutMessage)), timeoutMs);
   try {
     const result = await Promise.race([operationPromise, boundary]);
@@ -173,12 +182,8 @@ async function boundedStorageOperation<T>(
     return result;
   } catch (error) {
     if (boundaryError) {
-      // Give cooperative SDK work a bounded grace period. If it ignores
-      // cancellation, fail closed without persisting a potentially
-      // inconsistent snapshot; observe its late rejection so it cannot be
-      // unhandled after this command returns.
-      await settlePromiseWithin(operationPromise);
-      throw boundaryError;
+      await boundaryJoin;
+      throw boundaryFailure ?? boundaryError;
     }
     throw error;
   } finally {
@@ -197,9 +202,8 @@ export function withStorageDeadline<T>(
   signal: AbortSignal,
   timeoutMessage: string,
   cancelOperation?: () => void | Promise<void>,
-  onLateSuccess?: (value: T) => void,
 ): Promise<T> {
-  return boundedStorageOperation(operation, timeoutMs, signal, timeoutMessage, cancelOperation, onLateSuccess);
+  return boundedStorageOperation(operation, timeoutMs, signal, timeoutMessage, cancelOperation);
 }
 
 /**
@@ -294,14 +298,6 @@ async function createStorageForSession(
     STORAGE_OPEN_TIMEOUT_MS,
     signal,
     "storage client initialization timed out; retry the command",
-    undefined,
-    (lateStorage) => {
-      try {
-        lateStorage.getClient().stopClient();
-      } catch {
-        // The timeout has already failed closed; retain that result.
-      }
-    },
   );
 }
 
@@ -319,6 +315,8 @@ function createOpenedStorage(
   let closed = false;
   let snapshotSafe = true;
   let activeOperation: Promise<unknown> | undefined;
+  let abortCleanupFailure: unknown;
+  let abortCleanupFailed = false;
   const onAbort = () => {
     // Most core operations use the Matrix client directly and therefore do not
     // have a per-operation options object. Stopping the client is the SDK's
@@ -327,8 +325,11 @@ function createOpenedStorage(
     try {
       snapshotSafe = false;
       storage.getClient().stopClient();
-    } catch {
-      // Cleanup below retains the original cancellation result.
+    } catch (error) {
+      // The public cancellation result remains primary, but close() must
+      // report a failed abort cleanup alongside it.
+      abortCleanupFailure = error;
+      abortCleanupFailed = true;
     }
   };
   signal.addEventListener("abort", onAbort, { once: true });
@@ -364,25 +365,44 @@ function createOpenedStorage(
     closed = true;
     refreshState.active = false;
     signal.removeEventListener("abort", onAbort);
-    try {
-      if (activeOperation) {
-        try {
-          await activeOperation;
-        } catch {
-          // The command operation already owns its failure result.
-        }
-      }
-      stopObservingBackupProgress(storage);
-      storage.getClient().stopClient();
-      if (snapshotSafe) await persistCryptoStoreBounded(snapshotPath, lock);
-    } finally {
+    let activeOperationFailure: unknown;
+    let activeOperationFailed = false;
+    if (activeOperation) {
       try {
-        stopObservingBackupProgress(storage);
-        storage.getClient().stopClient();
-      } finally {
-        if (ownsLock) lock.release();
+        await activeOperation;
+      } catch (error) {
+        activeOperationFailure = error;
+        activeOperationFailed = true;
       }
     }
+
+    const failures: unknown[] = [];
+    if (activeOperationFailed) failures.push(activeOperationFailure);
+    if (abortCleanupFailed) failures.push(abortCleanupFailure);
+    const attempt = (cleanup: () => void): void => {
+      try {
+        cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    const attemptAsync = async (cleanup: () => Promise<void>): Promise<void> => {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+
+    // Each cleanup has an independent owner. Attempt every one even if an
+    // earlier observer, client, snapshot, or lock step fails.
+    attempt(() => stopObservingBackupProgress(storage));
+    attempt(() => storage.getClient().stopClient());
+    if (snapshotSafe) await attemptAsync(() => persistCryptoStoreBounded(snapshotPath, lock));
+    if (ownsLock) attempt(() => lock.release());
+
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "storage cleanup failed");
   };
 
   return { storage, session, run, close };
@@ -399,19 +419,19 @@ export async function openStorage(
 ): Promise<OpenedStorage> {
   const lock = acquireProfileLock(dir);
   if (signal.aborted) {
-    lock.release();
-    throw new StorageError("operation cancelled");
+    throwWithLockReleaseFailure(lock, new StorageError("operation cancelled"));
   }
   let session: Session | null = null;
   try {
     session = readSession(dir, lock);
   } catch (error) {
-    lock.release();
-    throw error;
+    throwWithLockReleaseFailure(lock, error);
   }
   if (!session) {
-    lock.release();
-    throw new StorageError("not logged in — run `telecrypt-io storage login` first");
+    throwWithLockReleaseFailure(
+      lock,
+      new StorageError("not logged in — run `telecrypt-io storage login` first"),
+    );
   }
 
   const snapshotPath = cryptoSnapshotPath(dir);
@@ -434,8 +454,7 @@ export async function openStorage(
     );
   } catch (error) {
     refreshState.active = false;
-    lock.release();
-    throw error;
+    throwWithLockReleaseFailure(lock, error);
   }
 
   return createOpenedStorage(storage, session, dir, lock, true, refreshState, signal);
@@ -528,7 +547,9 @@ export async function initStorageForNewSession(
   const lock = heldLock ?? acquireProfileLock(dir);
   const ownsLock = !heldLock;
   if (signal.aborted) {
-    if (ownsLock) lock.release();
+    if (ownsLock) {
+      throwWithLockReleaseFailure(lock, new StorageError("operation cancelled"));
+    }
     throw new StorageError("operation cancelled");
   }
   const refreshState: RefreshState = { active: true };
@@ -544,7 +565,9 @@ export async function initStorageForNewSession(
     );
   } catch (error) {
     refreshState.active = false;
-    if (ownsLock) lock.release();
+    if (ownsLock) {
+      throwWithLockReleaseFailure(lock, error);
+    }
     throw error;
   }
 

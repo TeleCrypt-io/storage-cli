@@ -89,12 +89,12 @@ describe("local MAS device approval", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  it("bounds local MAS HTML responses", async () => {
+  it("reads a large local MAS HTML response without a diagnostic-size rejection", async () => {
     const fetchMock = vi.fn().mockResolvedValue(response("x".repeat((1 << 20) + 1)));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(approveDeviceCodeViaHttp("alice", "test-only-password", "ABC-123")).rejects.toThrow(
-      /response exceeds the output limit/,
+      /no CSRF token/,
     );
   });
 

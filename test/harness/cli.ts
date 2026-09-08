@@ -8,7 +8,6 @@ const REPO_ROOT = process.cwd();
 const TSX_BIN = path.join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const CLI_ENTRY = path.join(REPO_ROOT, "test", "harness", "cliEntry.ts");
 const INSTALLED_CLI = process.env.TELECRYPT_IO_STORAGE_TEST_CLI_BIN;
-const MAX_CLI_OUTPUT_BYTES = 256 * 1024;
 
 function minimalEnvironment(overrides: Record<string, string>): NodeJS.ProcessEnv {
   const inherited: NodeJS.ProcessEnv = {};
@@ -23,7 +22,25 @@ function minimalEnvironment(overrides: Record<string, string>): NodeJS.ProcessEn
 }
 
 function sanitizeOutput(value: string): string {
-  return safeErrorMessage(value);
+  return value
+    .split(/\r?\n/u)
+    .map((line) => safeErrorMessage(line))
+    .join("\n");
+}
+
+function parseJsonLine(stream: string): Record<string, unknown> {
+  const lines = stream.trim().split(/\r?\n/u).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed: unknown = JSON.parse(lines[index]);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Diagnostics may precede the final machine-readable error line.
+    }
+  }
+  throw new SyntaxError("stream did not contain a JSON object line");
 }
 
 export interface CliResult {
@@ -86,14 +103,7 @@ export function runCli(
     options.abortSignal?.addEventListener("abort", requestAbort, { once: true });
     let stdout = "";
     let stderr = "";
-    const append = (current: string, chunk: Buffer): string => {
-      const next = current + chunk.toString();
-      if (Buffer.byteLength(next, "utf8") > MAX_CLI_OUTPUT_BYTES) {
-        requestAbort(new Error(`CLI test subprocess exceeded the ${MAX_CLI_OUTPUT_BYTES}-byte output limit`));
-        return current;
-      }
-      return next;
-    };
+    const append = (current: string, chunk: Buffer): string => current + chunk.toString();
     child.stdout.on("data", (d: Buffer) => (stdout = append(stdout, d)));
     child.stderr.on("data", (d: Buffer) => {
       stderr = append(stderr, d);
@@ -126,27 +136,26 @@ export function runCli(
   });
 }
 
-/** Runs the CLI with --json and parses stdout as JSON. Throws with full
- * stdout/stderr context (never silently swallowed) if stdout wasn't valid
- * JSON — a corrupted stdout contract (e.g. stray SDK log lines) is itself a
- * bug worth surfacing loudly, not a thing to work around in the test. */
+/** Runs the CLI with --json and parses its machine-readable result. Successful
+ * stdout is one JSON line; failure stderr may also contain diagnostics, so the
+ * final JSON object line is the command result. */
 export async function cliJson(
   args: string[],
   env: Record<string, string>,
   options: RunCliOptions = {},
 ): Promise<{ code: number; json: Record<string, unknown>; stderr: string; stdout: string }> {
   const result = await runCli([...args, "--json"], env, options);
-  // On success the JSON payload is on stdout; on failure it's the
-  // `{ "error": "..." }` object on stderr (see output.ts) — parse whichever
-  // stream the CLI actually used, per its own contract.
+  // On success the JSON payload is on stdout; on failure the final JSON object
+  // line is on stderr (see output.ts), after any preserved diagnostics.
   const source = result.code === 0 ? result.stdout : result.stderr;
   let json: Record<string, unknown>;
   try {
-    json = JSON.parse(source.trim());
-  } catch {
+    json = parseJsonLine(source);
+  } catch (error) {
     throw new Error(
       `CLI output was not valid JSON (exit ${result.code})\n` +
         `args: ${JSON.stringify(args)}\nstdout: ${JSON.stringify(result.stdout)}\nstderr: ${JSON.stringify(result.stderr)}`,
+      { cause: error },
     );
   }
   return { code: result.code, json, stderr: result.stderr, stdout: result.stdout };
@@ -183,11 +192,11 @@ export async function cleanupFreshProfiles(): Promise<void> {
         }, { timeoutMs: 20_000 });
         if (result.code !== 0) {
           remoteCleanupSucceeded = false;
-          failures.push(`${dir}: remote logout did not complete`);
+          failures.push(`${dir}: remote logout exited ${result.code}\n${result.stdout}\n${result.stderr}`);
         }
-      } catch {
+      } catch (error) {
         remoteCleanupSucceeded = false;
-        failures.push(`${dir}: remote logout could not be attempted`);
+        failures.push(`${dir}: remote logout failed: ${safeErrorMessage(error)}`);
       }
     }
     // Preserve bearer state when revocation was not confirmed so teardown can
@@ -196,8 +205,8 @@ export async function cleanupFreshProfiles(): Promise<void> {
     try {
       fs.rmSync(dir, { recursive: true, force: true });
       cleaned.add(dir);
-    } catch {
-      failures.push(dir);
+    } catch (error) {
+      failures.push(`${dir}: local profile removal failed: ${safeErrorMessage(error)}`);
     }
   }
   for (const dir of cleaned) {

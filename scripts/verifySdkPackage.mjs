@@ -13,7 +13,7 @@ function readBoundedJson(path, label) {
   try {
     stat = fs.statSync(path);
   } catch (error) {
-    throw new Error(`${label} cannot be read: ${error.message}`);
+    throw new Error(`${label} cannot be read`, { cause: error });
   }
   if (!stat.isFile() || stat.size > MAX_PACKAGE_JSON_BYTES) {
     throw new Error(`${label} exceeds the bounded JSON input`);
@@ -21,7 +21,7 @@ function readBoundedJson(path, label) {
   try {
     return JSON.parse(fs.readFileSync(path, "utf8"));
   } catch (error) {
-    throw new Error(`${label} is not valid JSON: ${error.message}`);
+    throw new Error(`${label} is not valid JSON`, { cause: error });
   }
 }
 
@@ -64,14 +64,14 @@ export function verifySdkPackageBinding(tarballPath, lock, expectedVersion) {
   try {
     const text = execFileSync("tar", ["-xOzf", tarballPath, "--", "package/package.json"], {
       encoding: "utf8",
-      maxBuffer: MAX_PACKAGE_JSON_BYTES + 1,
+      maxBuffer: Number.POSITIVE_INFINITY,
       timeout: 30_000,
       stdio: ["ignore", "pipe", "pipe"],
     });
     if (Buffer.byteLength(text, "utf8") > MAX_PACKAGE_JSON_BYTES) throw new Error("package metadata is too large");
     packageJson = JSON.parse(text);
-  } catch {
-    throw new Error("SDK tarball package metadata is invalid or unavailable");
+  } catch (error) {
+    throw new Error("SDK tarball package metadata is invalid or unavailable", { cause: error });
   }
   if (
     !packageJson ||

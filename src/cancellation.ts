@@ -1,4 +1,5 @@
 import { StorageError } from "@telecrypt-io/storage/core";
+import { throwCombinedFailures } from "./failure.js";
 
 /** One controller is shared by the command and all SDK-backed work it starts.
  * Signal handlers only request cancellation; cleanup remains in each action's
@@ -14,13 +15,7 @@ const SIGNAL_EXIT_CODES: Readonly<Record<SupportedSignal, number>> = {
   SIGTERM: 143,
 };
 
-/**
- * Cancellation is cooperative, but a broken transport must not hold a CLI
- * command open forever after its caller has already requested shutdown.  The
- * result distinguishes a late completion from a promise that is still
- * running; both branches attach a rejection handler so a deliberately
- * non-cooperative operation cannot become an unhandled rejection later.
- */
+/** The grace period bounds cleanup that belongs to the current operation. */
 export const CANCELLATION_JOIN_GRACE_MS = 5_000;
 
 export type PromiseSettlement<T> =
@@ -52,9 +47,7 @@ export function settlePromiseWithin<T>(
   });
 }
 
-/** Runs one operation behind a caller-owned abort boundary. The operation is
- * started only after the signal has been checked, and a late rejection is
- * consumed when a non-cooperative implementation ignores cancellation. */
+/** Runs one operation behind a caller-owned abort boundary. */
 export function runWithAbortRace<T>(
   operation: () => Promise<T>,
   signal: AbortSignal,
@@ -71,27 +64,22 @@ export function runWithAbortRace<T>(
     if (signal.aborted) throw abortError;
     return operation();
   });
-  // A broken operation may settle after the abort race has returned; observe
-  // that late rejection so it cannot become an unhandled rejection.
-  request.catch(() => undefined);
   signal.addEventListener("abort", onAbort, { once: true });
   return Promise.race([request, aborted]).finally(() => {
     signal.removeEventListener("abort", onAbort);
   });
 }
 
-/** Stops a readable response body without allowing a broken stream's cancel
- * implementation to extend the caller's cancellation boundary. */
+/** Stops a readable response body within the cleanup deadline. */
 export async function cancelReadableStreamReaderWithinBound<T>(
   reader: ReadableStreamDefaultReader<T>,
 ): Promise<void> {
-  const cancellation = Promise.resolve()
-    .then(() => reader.cancel())
-    .then(
-      () => undefined,
-      () => undefined,
-    );
-  await settlePromiseWithin(cancellation);
+  const cancellation = Promise.resolve().then(() => reader.cancel());
+  const settlement = await settlePromiseWithin(cancellation);
+  if (settlement.status === "rejected") throw settlement.error;
+  if (settlement.status === "timeout") {
+    throw new StorageError("response body cancellation timed out");
+  }
 }
 
 /** Races one body read against its abort signal. The read and its rejection
@@ -103,7 +91,11 @@ export async function readReadableStreamChunkWithAbort<T>(
   abortError: Error,
 ): Promise<ReadableStreamReadResult<T>> {
   if (signal.aborted) {
-    void cancelReadableStreamReaderWithinBound(reader);
+    try {
+      await cancelReadableStreamReaderWithinBound(reader);
+    } catch (cleanupError) {
+      throwCombinedFailures(abortError, true, [cleanupError], "response read cancellation failed");
+    }
     throw abortError;
   }
 
@@ -113,7 +105,6 @@ export async function readReadableStreamChunkWithAbort<T>(
   });
   const onAbort = (): void => {
     rejectAbort(abortError);
-    void cancelReadableStreamReaderWithinBound(reader);
   };
   signal.addEventListener("abort", onAbort, { once: true });
 
@@ -121,11 +112,15 @@ export async function readReadableStreamChunkWithAbort<T>(
     if (signal.aborted) throw abortError;
     return reader.read();
   });
-  // A non-cooperative reader may settle after the abort race has rejected;
-  // consume its late failure so it cannot become an unhandled rejection.
-  read.catch(() => undefined);
   try {
     return await Promise.race([read, aborted]);
+  } catch (error) {
+    try {
+      await cancelReadableStreamReaderWithinBound(reader);
+    } catch (cleanupError) {
+      throwCombinedFailures(error, true, [cleanupError], "response read cancellation failed");
+    }
+    throw error;
   } finally {
     signal.removeEventListener("abort", onAbort);
   }

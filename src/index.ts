@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 import "fake-indexeddb/auto";
+import { Console } from "node:console";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Command } from "commander";
-import { acquireProfileLock, isCanonicalMatrixUserId, profileDir, readSession } from "./profile.js";
+import {
+  acquireProfileLock,
+  isCanonicalMatrixUserId,
+  profileDir,
+  readSession,
+  throwWithLockReleaseFailure,
+} from "./profile.js";
 import {
   markBackupWorkPending,
   openStorage,
@@ -19,26 +26,20 @@ import { logoutProfile } from "./logout.js";
 import { assertTrustedHomeserver } from "./oidc.js";
 import { cancellationExitCode, installCancellationHandlers } from "./cancellation.js";
 import { scheduleBoundedNormalExit } from "./processExit.js";
-import { readBoundedInput, writeBoundedDownload } from "./fileTransfer.js";
-import { MAX_RECOVERY_KEY_BYTES, readRecoveryKey, requireRecoveryKey } from "./recoveryInput.js";
+import { readBoundedInput, writeDownload } from "./fileTransfer.js";
+import { readRecoveryKey } from "./recoveryInput.js";
 
-// matrix-js-sdk (loglevel) and the rust-crypto WASM tracing layer write
-// verbose logs straight to console.log/debug/info/trace (stdout by default)
-// AND console.warn/error (stderr by default) — e.g. push-rule setup notices
-// and background-request warnings fire on totally successful runs. Left
-// alone, that corrupts BOTH halves of the CLI's output contract: stdout must
-// be exactly one line (human text or --json payload), and stderr under
-// --json must be exactly one `{"error": "..."}` line for a test (or script)
-// to parse. Silence all of them here, before TeleCryptIOStorage.create() ever
-// triggers rust-crypto initialisation; the CLI's own output always goes
-// through process.stdout.write/process.stderr.write directly (see
-// output.ts), never console.*, so this can't swallow anything we emit.
-console.log = () => {};
-console.debug = () => {};
-console.info = () => {};
-console.trace = () => {};
-console.warn = () => {};
-console.error = () => {};
+// matrix-js-sdk and rust-crypto use the process-global console. Keep their
+// complete diagnostics off stdout, where the CLI's successful machine output
+// is written, while preserving them on stderr for investigation. The CLI's
+// own result/error writer uses the streams directly (see output.ts).
+const diagnosticConsole = new Console({ stdout: process.stderr, stderr: process.stderr, ignoreErrors: false });
+console.log = diagnosticConsole.log.bind(diagnosticConsole);
+console.debug = diagnosticConsole.debug.bind(diagnosticConsole);
+console.info = diagnosticConsole.info.bind(diagnosticConsole);
+console.trace = diagnosticConsole.trace.bind(diagnosticConsole);
+console.warn = diagnosticConsole.warn.bind(diagnosticConsole);
+console.error = diagnosticConsole.error.bind(diagnosticConsole);
 
 const EXT_MIMETYPES: Record<string, string> = {
   ".txt": "text/plain",
@@ -49,16 +50,6 @@ const EXT_MIMETYPES: Record<string, string> = {
   ".pdf": "application/pdf",
   ".md": "text/markdown",
 };
-const MAX_RECOVERY_RESULT_COUNT = 100_000;
-const MAX_LIST_RESULT_COUNT = 10_000;
-
-function requireBoundedList<T>(value: T[], label: string): T[] {
-  if (value.length > MAX_LIST_RESULT_COUNT) {
-    throw new StorageError(`${label} returned too many entries`);
-  }
-  return value;
-}
-
 function withCoreDeadline<T>(
   opened: OpenedStorage,
   operation: (signal: AbortSignal) => Promise<T>,
@@ -76,10 +67,26 @@ async function withProfileStorage<T>(
   operation: (opened: OpenedStorage) => Promise<T>,
 ): Promise<T> {
   const opened = await openProfileStorage(signal);
+  let operationFailed = false;
+  let operationError: unknown;
   try {
     return await operation(opened);
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+    throw error;
   } finally {
-    await opened.close();
+    try {
+      await opened.close();
+    } catch (closeError) {
+      if (operationFailed) {
+        throw new AggregateError(
+          [operationError, closeError],
+          "storage operation and cleanup failed",
+        );
+      }
+      throw closeError;
+    }
   }
 }
 
@@ -87,33 +94,8 @@ function guessMimetype(filePath: string): string {
   return EXT_MIMETYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
 }
 
-interface RecoveryResult {
-  recoveryKey?: string;
-  imported?: number;
-  total?: number;
-}
-
-function validateRecoveryResult(value: unknown): RecoveryResult {
-  if (!value || typeof value !== "object") throw new StorageError("recovery operation returned an invalid result");
-  const result = value as { recoveryKey?: unknown; imported?: unknown; total?: unknown };
-  if (result.recoveryKey !== undefined) {
-    if (typeof result.recoveryKey !== "string" || Buffer.byteLength(result.recoveryKey, "utf8") > MAX_RECOVERY_KEY_BYTES) {
-      throw new StorageError("recovery setup returned an invalid recovery key");
-    }
-    requireRecoveryKey(result.recoveryKey);
-  }
-  for (const [name, count] of [["imported", result.imported], ["total", result.total]] as const) {
-    if (
-      count !== undefined &&
-      (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > MAX_RECOVERY_RESULT_COUNT)
-    ) {
-      throw new StorageError(`recovery ${name} count is invalid`);
-    }
-  }
-  if (typeof result.imported === "number" && typeof result.total === "number" && result.imported > result.total) {
-    throw new StorageError("recovery result counts are inconsistent");
-  }
-  return result as RecoveryResult;
+function writeCommanderDiagnostic(value: string): void {
+  process.stderr.write(value.split(/\r?\n/u).map((line) => safeErrorMessage(line)).join("\n"));
 }
 
 const program = new Command();
@@ -122,11 +104,14 @@ program
   .description("TeleCrypt.io CLI")
   .option("--json", "machine-readable JSON output")
   .showHelpAfterError()
-  // Commander otherwise calls process.exit() for parse errors and writes its
-  // own unredacted diagnostic/help text. Route all parse failures through the
-  // same drained, JSON-aware boundary used by command actions below.
+  // Commander otherwise calls process.exit() for parse errors. Keep its
+  // sanitized diagnostics visible on stderr and route the final status through
+  // main().
   .exitOverride()
-  .configureOutput({ writeErr: () => {}, outputError: () => {} });
+  .configureOutput({
+    writeErr: writeCommanderDiagnostic,
+    outputError: (message, write) => write(message),
+  });
 
 const storage = program
   .command("storage")
@@ -176,6 +161,8 @@ storage
     await runAction(command, async (_signal): Promise<CommandResult> => {
       const dir = profileDir();
       const lock = acquireProfileLock(dir);
+      let operationFailed = false;
+      let operationError: unknown;
       try {
         const session = readSession(dir, lock);
         if (!session) throw new StorageError("not logged in");
@@ -184,7 +171,12 @@ storage
           json: { userId: session.userId, deviceId: session.deviceId, homeserver },
           text: `${safeOutputField(session.userId)} (device ${safeOutputField(session.deviceId)}) @ ${safeOutputField(homeserver)}`,
         };
+      } catch (error) {
+        operationFailed = true;
+        operationError = error;
+        throw error;
       } finally {
+        if (operationFailed) throwWithLockReleaseFailure(lock, operationError);
         lock.release();
       }
     });
@@ -216,12 +208,11 @@ recovery
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
         markBackupWorkPending(opened.storage);
-        const result = validateRecoveryResult(await withCoreDeadline(
+        const result = await withCoreDeadline(
           opened,
           (operationSignal) => core.setupRecovery(opened.storage, { signal: operationSignal }),
           "recovery setup",
-        ));
-        if (result.recoveryKey === undefined) throw new StorageError("recovery setup returned no recovery key");
+        );
         // Give any already-known megolm sessions a chance to actually reach
         // the server backup before this short-lived process exits — see
         // waitForBackupSettled's doc comment.
@@ -250,14 +241,11 @@ recovery
     await runAction(command, async (signal): Promise<CommandResult> => {
       const recoveryKey = await readRecoveryKey(Boolean(opts.keyStdin), signal);
       return withProfileStorage(signal, async (opened) => {
-          const result = validateRecoveryResult(await withCoreDeadline(
+          const result = await withCoreDeadline(
             opened,
             (operationSignal) => core.restoreRecovery(opened.storage, recoveryKey, { signal: operationSignal }),
             "recovery restore",
-          ));
-          if (result.imported === undefined || result.total === undefined) {
-            throw new StorageError("recovery restore returned incomplete counts");
-          }
+          );
           return {
             json: { ...result },
             text: `Restored ${safeOutputField(result.imported)}/${safeOutputField(result.total)} keys.`,
@@ -293,8 +281,9 @@ vault
   .action(async (_opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const vaults = requireBoundedList(
-          await withCoreDeadline(opened, (operationSignal) => core.listVaults(opened.storage, { signal: operationSignal }), "vault listing"),
+        const vaults = await withCoreDeadline(
+          opened,
+          (operationSignal) => core.listVaults(opened.storage, { signal: operationSignal }),
           "vault listing",
         );
         return {
@@ -337,8 +326,9 @@ subfolder
   .action(async (parentId: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const folders = requireBoundedList(
-          await withCoreDeadline(opened, (operationSignal) => core.listSubfolders(opened.storage, parentId, { signal: operationSignal }), "folder listing"),
+        const folders = await withCoreDeadline(
+          opened,
+          (operationSignal) => core.listSubfolders(opened.storage, parentId, { signal: operationSignal }),
           "folder listing",
         );
         return {
@@ -394,11 +384,6 @@ vault
   .option("--role <role>", "viewer or editor", "viewer")
   .action(async (vaultId: string, userId: string, opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
-      // Validate before opening storage so a bad --role fails fast. The core
-      // operation repeats the check for callers outside this CLI.
-      if (opts.role !== "viewer" && opts.role !== "editor") {
-        throw new StorageError(`invalid --role "${safeOutputField(opts.role)}" (must be viewer or editor)`);
-      }
       if (!isCanonicalMatrixUserId(userId)) throw new StorageError("shared member must be a canonical Matrix user ID");
       return withProfileStorage(signal, async (opened) => {
         const result = await withCoreDeadline(opened, (operationSignal) => core.shareVault(opened.storage, vaultId, userId, opts.role, { signal: operationSignal }), "vault share");
@@ -416,8 +401,9 @@ vault
   .action(async (vaultId: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const members = requireBoundedList(
-          await withCoreDeadline(opened, (operationSignal) => core.listMembers(opened.storage, vaultId, { signal: operationSignal }), "member listing"),
+        const members = await withCoreDeadline(
+          opened,
+          (operationSignal) => core.listMembers(opened.storage, vaultId, { signal: operationSignal }),
           "member listing",
         );
         return {
@@ -514,8 +500,9 @@ file
   .action(async (treeId: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        const files = requireBoundedList(
-          await withCoreDeadline(opened, (operationSignal) => core.listFiles(opened.storage, treeId, { signal: operationSignal }), "file listing"),
+        const files = await withCoreDeadline(
+          opened,
+          (operationSignal) => core.listFiles(opened.storage, treeId, { signal: operationSignal }),
           "file listing",
         );
         return {
@@ -532,14 +519,13 @@ file
   .action(async (treeId: string, fileId: string, destPath: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
       return withProfileStorage(signal, async (opened) => {
-        // The SDK returns a complete Uint8Array and enforces its 128 MiB media
-        // bound internally. Keep the CLI's outer deadline and destination
-        // checks around that API until a streaming surface is available.
+        // The SDK returns a complete Uint8Array. Keep the CLI's outer deadline
+        // and destination checks around that API.
         const result = await opened.run(
           (operationSignal) => core.downloadFile(opened.storage, treeId, fileId, { signal: operationSignal }),
           "file download",
         );
-        writeBoundedDownload(destPath, result.bytes);
+        writeDownload(destPath, result.bytes);
         return {
           json: { path: destPath, bytes: result.bytes.byteLength, mimetype: result.mimetype },
           text: `Downloaded ${result.bytes.byteLength} bytes to ${safeOutputField(destPath)}`,
@@ -599,7 +585,7 @@ export async function main(argv: string[] = process.argv): Promise<void> {
       process.exitCode = cancellationExitCode() ?? 0;
       return;
     }
-    const message = safeErrorMessage(err instanceof Error ? err.message : String(err));
+    const message = safeErrorMessage(err);
     const jsonMode = argv.includes("--json");
     try {
       await writeParseError(jsonMode ? JSON.stringify({ error: message }) : `Error: ${message}`);

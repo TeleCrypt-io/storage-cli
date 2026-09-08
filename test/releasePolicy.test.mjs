@@ -136,6 +136,25 @@ test("the SDK consumer contract accepts a normal npm v3 lock entry without name 
   }
 });
 
+test("the SDK consumer contract preserves package extraction failures", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sdk-binding-invalid-"));
+  try {
+    const archivePath = path.join(directory, "storage-sdk.tgz");
+    fs.writeFileSync(archivePath, "not a tar archive");
+    const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(archivePath)).digest("base64")}`;
+    assert.throws(
+      () => verifySdkPackageBinding(archivePath, sdkLock(integrity), "0.5.20"),
+      (error) => {
+        assert.match(error.message, /package metadata is invalid or unavailable/u);
+        assert.ok(error.cause instanceof Error);
+        return true;
+      },
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("the SDK consumer contract rejects malformed package, lock, bytes, and version identities", () => {
   const validMetadata = { name: "@telecrypt-io/storage", version: "0.5.20" };
   const fixtures = [];
@@ -214,9 +233,24 @@ test("the release workflow performs npm signature verification before SDK proven
   assert.match(workflow, /if test "\$status" = 0; then\s+return 1\s+fi\s+return "\$status"/u);
 });
 
+test("release capture helpers retain and report nonempty stderr on success", () => {
+  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.match(workflow, /finish_capture "\$status" true "\$stdout_path" "\$stderr_path"/u);
+  assert.match(workflow, /finish_capture "\$status" true "\$output" "\$error"/u);
+  assert.match(workflow, /replay_capture "\$attempt_stdout" "\$attempt_stderr" false/u);
+});
+
+test("required release commands preserve npm and Git diagnostics", () => {
+  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(workflow, /--loglevel(?:=|\s+)error/u);
+  assert.doesNotMatch(workflow, /\bnpm\b[^\n]*(?:--silent|--quiet)/u);
+  assert.doesNotMatch(workflow, /\bgit\b[^\n]*\bfetch\b[^\n]*--quiet/u);
+});
+
 test("the release workflow discovers drafts through complete paginated list records", () => {
   const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.match(workflow, /api --paginate --jq '\.\[\] \| @json'/u);
+  assert.match(workflow, /api --paginate --hostname github\.com/u);
+  assert.match(workflow, /map\(\.\[\]\)\[\]/u);
   assert.match(workflow, /parseReleaseList/u);
   assert.match(workflow, /Number\.isSafeInteger\(release\.id\)/u);
   assert.match(workflow, /release_resource_endpoint/u);
@@ -244,7 +278,6 @@ test("Release creation consumes one returned ID and rechecks that exact resource
   assert.match(create, /--field draft=true/u);
   assert.match(create, /--field prerelease=false/u);
   assert.match(create, /--field generate_release_notes=true/u);
-  assert.match(create, /test ! -s "\$release_create_error"/u);
   assert.match(create, /set_release_resource_endpoint_from_json "\$release_create_json"/u);
   assert.match(create, /release_state="\$\(fetch_release_by_id\)"/u);
   assert.match(create, /draft-empty.*draft-exact/u);
@@ -291,7 +324,7 @@ test("the source and hosted jobs use one exact Node release toolchain", () => {
   assert.equal(verifyWorkflow.match(/test "\$\(npm --version\)" = "11\.19\.0"/gu)?.length, 1);
 });
 
-test("only one bounded GitHub 404 is considered a missing Release", () => {
+test("only one exact GitHub 404 is considered a missing Release", () => {
   assert.equal(isConfirmedNotFound(1, "gh: Not Found (HTTP 404)\n"), true);
   assert.equal(isConfirmedNotFound(124, "gh: Not Found (HTTP 404)\n"), false);
   assert.equal(isConfirmedNotFound(1, "timeout\ngh: Not Found (HTTP 404)\n"), false);
@@ -306,7 +339,7 @@ test("release list discovery selects one exact tag and rejects ambiguity", () =>
   assert.throws(() => findReleaseByTag([{ ...release(), id: "123" }], tag), /list entry/u);
 });
 
-test("release list parsing is bounded and fails closed on incomplete pagination", () => {
+test("release list parsing preserves complete API output and fails closed on incomplete pagination", () => {
   const encoded = [release(), { ...release(), id: 456, tag_name: "other" }]
     .map((entry) => JSON.stringify(JSON.stringify(entry))).join("\n");
   assert.deepEqual(parseReleaseList(`${encoded}\n`), [release(), { ...release(), id: 456, tag_name: "other" }]);
@@ -314,7 +347,7 @@ test("release list parsing is bounded and fails closed on incomplete pagination"
   assert.deepEqual(parseReleaseList(`${raw}\n`), [release(), { ...release(), id: 456, tag_name: "other" }]);
   assert.deepEqual(parseReleaseList(""), []);
   assert.throws(() => parseReleaseList("{}"), /incomplete/u);
-  assert.throws(() => parseReleaseList("x".repeat(1_048_577)), /bounded/u);
+  assert.throws(() => parseReleaseList("x".repeat(1_048_577)), /incomplete/u);
   assert.throws(() => parseReleaseList(`${encoded.slice(0, -3)}\n`), /incomplete/u);
   assert.throws(() => parseReleaseList(`${JSON.stringify(JSON.stringify(release()))}\n${JSON.stringify(JSON.stringify(release()))}\n`), /duplicate/u);
 });

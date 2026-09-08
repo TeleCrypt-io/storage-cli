@@ -22,18 +22,8 @@ import {
   type PendingSession,
   type Session,
 } from "./profile.js";
-import { settlePromiseWithin } from "./cancellation.js";
+import { withCause } from "./failure.js";
 import { expectedMatrixServerName, isExactLoopbackHost } from "./topology.js";
-
-// Keep the source checkout usable with the locally installed pre-0.5 SDK while
-// the published SDK gains the explicit topology argument. The cast changes no
-// runtime behavior; the exact release's declaration is the authoritative type.
-const whoAmIWithServerName = whoAmI as unknown as (
-  homeserver: string,
-  accessToken: string,
-  serverName: string,
-  signal?: AbortSignal,
-) => Promise<Awaited<ReturnType<typeof whoAmI>>>;
 
 /** Carries the exact bearer credentials that must be revoked when a device
  * grant succeeded but the CLI could not finish identity verification or
@@ -72,10 +62,8 @@ const MAX_OIDC_VALUE_BYTES = 16 * 1024;
 
 // The Matrix OIDC discovery client touches browser storage even in Node. Keep
 // this shim scoped to discovery: a permanent global window breaks the SDK's
-// Node crypto/runtime feature detection. The SDK 0.5/Matrix 42.2 release gate
-// retains this compatibility boundary until the published SDK no longer
-// needs it. The abort listener removes it even if discovery's body reader
-// ignores cancellation and outlives the outer deadline.
+// Node crypto/runtime feature detection. The abort listener removes it even
+// if discovery's body reader ignores cancellation and outlives the deadline.
 class OidcMemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
 
@@ -131,9 +119,8 @@ async function withOidcWindowStorage<T>(
     owner.owners -= 1;
     if (owner.owners > 0) return;
     if (activeOidcWindowShim === owner) activeOidcWindowShim = undefined;
-    // A non-cooperative discovery call may still be running after the outer
-    // deadline returns. Remove only the shim this invocation owns; do not
-    // overwrite a replacement installed by another owner.
+    // Remove only the shim this invocation owns; do not overwrite a replacement
+    // installed by another owner while discovery is still pending.
     if (globalObject.window === owner.value) delete globalObject.window;
   };
   if (activeOidcWindowShim && globalObject.window === activeOidcWindowShim.value) {
@@ -186,16 +173,14 @@ function safeDeviceAccessError(error: unknown): string {
   return "device login was not approved";
 }
 
-/** Adds a real abort boundary around SDK OIDC calls. The SDK 0.5 OIDC
- * operations receive this signal directly; cooperative calls abort their HTTP
- * request and polling delay, while a broken call is reaped only for a bounded
- * grace period before this function fails closed. */
+/** Adds a real abort boundary around SDK OIDC calls. The SDK OIDC operations
+ * receive this signal directly; cooperative calls abort their HTTP request and
+ * polling delay. A deadline failure is the complete public result. */
 async function withDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   label: string,
   timeoutMs: number,
   externalSignal?: AbortSignal,
-  cancelledSuccess?: (value: T, boundaryError: StorageError) => Error,
 ): Promise<T> {
   if (externalSignal?.aborted) throw new StorageError("OIDC operation cancelled");
   const controller = new AbortController();
@@ -209,10 +194,6 @@ async function withDeadline<T>(
     }
     return operation(controller.signal);
   });
-  // A signal-aware callee should stop promptly, but keep its eventual
-  // rejection handled when a broken/older callee ignores the signal and the
-  // hard deadline wins the race.
-  operationPromise.catch(() => undefined);
   const cancellation = new Promise<never>((_, reject) => {
     const handler = () => {
       boundaryError = new StorageError("OIDC operation cancelled");
@@ -237,13 +218,9 @@ async function withDeadline<T>(
     return result;
   } catch (error) {
     if (controller.signal.aborted) {
-      const settlement = await settlePromiseWithin(operationPromise);
       const finalBoundary = externalSignal?.aborted
         ? new StorageError("OIDC operation cancelled")
         : boundaryError ?? timeoutError;
-      if (settlement.status === "fulfilled" && cancelledSuccess) {
-        throw cancelledSuccess(settlement.value, finalBoundary);
-      }
       throw finalBoundary;
     }
     throw error;
@@ -524,33 +501,6 @@ export async function runDeviceCodeLogin(
     "OIDC approval",
     OIDC_APPROVAL_TIMEOUT_MS,
     signal,
-    (lateResult, boundaryError) => {
-      if (isDeviceAccessTokenError(lateResult)) return boundaryError;
-      let accessToken: string;
-      try {
-        accessToken = requireOpaqueValue(lateResult.access_token, "OIDC access token");
-      } catch {
-        return boundaryError;
-      }
-      const pending: PendingSession = {
-        homeserver: trustedHomeserver,
-        deviceId,
-        accessToken,
-        oidcIssuer,
-        oidcClientId: clientId,
-        oidcTokenEndpoint,
-        oidcRevocationEndpoint,
-        matrixServerName: trustedMatrixServerName,
-      };
-      if (lateResult.refresh_token) {
-        try {
-          pending.refreshToken = requireOpaqueValue(lateResult.refresh_token, "OIDC refresh token");
-        } catch {
-          // The access token remains revocable even when the refresh field is malformed.
-        }
-      }
-      return new OidcLoginError(boundaryError.message, pending);
-    },
   );
   if (isDeviceAccessTokenError(result)) {
     throw new StorageError(safeDeviceAccessError(result.error));
@@ -585,7 +535,7 @@ export async function runDeviceCodeLogin(
 
   try {
     const who = await withDeadline(
-      (requestSignal) => whoAmIWithServerName(trustedHomeserver, accessToken, trustedMatrixServerName, requestSignal),
+      (requestSignal) => whoAmI(trustedHomeserver, accessToken, trustedMatrixServerName, requestSignal),
       "OIDC identity verification",
       OIDC_REQUEST_TIMEOUT_MS,
       signal,
@@ -617,6 +567,6 @@ export async function runDeviceCodeLogin(
   } catch (error) {
     if (error instanceof OidcLoginError) throw error;
     const message = error instanceof Error ? error.message : "OIDC identity verification failed";
-    throw new OidcLoginError(message, pending);
+    throw withCause(new OidcLoginError(message, pending), error);
   }
 }

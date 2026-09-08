@@ -24,7 +24,6 @@ export async function waitFor<T>(
   try {
     while (true) {
       const checkPromise = Promise.resolve().then(() => check(controller.signal));
-      checkPromise.catch(() => undefined);
       let result: T;
       try {
         result = await Promise.race([checkPromise, deadlinePromise]);
@@ -32,9 +31,14 @@ export async function waitFor<T>(
         if (controller.signal.aborted) {
           // Give a timed-out check a bounded opportunity to reap its process or
           // request before the next scenario reuses its profile or fixture.
-          // settlePromiseWithin also consumes a late rejection if it ignores
-          // its signal.
-          await settlePromiseWithin(checkPromise);
+          const settlement = await settlePromiseWithin(checkPromise);
+          if (settlement.status === "rejected" && settlement.error !== timeoutError) {
+            throw new AggregateError(
+              [timeoutError, settlement.error],
+              `${timeoutError.message}; timed-out check also failed`,
+              { cause: timeoutError },
+            );
+          }
           throw timeoutError;
         }
         throw error;

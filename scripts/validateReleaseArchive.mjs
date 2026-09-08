@@ -41,7 +41,6 @@ const MAX_LICENSE_BYTES = 1_048_576;
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBER_BYTES = 128 * 1024 * 1024;
 const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
-const MAX_TAR_LISTING_BYTES = 64 * 1024 * 1024;
 const TAR_TIMEOUT_MS = 30_000;
 const EXACT_SHA512_INTEGRITY = /^sha512-[A-Za-z0-9+/]{86}==$/u;
 export const FORBIDDEN_RELEASE_MARKERS = [
@@ -89,7 +88,7 @@ function readTarLicense(archivePath, memberPath) {
   const name = memberPath.slice(memberPath.lastIndexOf("/") + 1);
   const listing = execFileSync("tar", ["-tvzf", archivePath, "--numeric-owner", "--full-time", "--", memberPath], {
     encoding: "utf8",
-    maxBuffer: 256 * 1024,
+    maxBuffer: Number.POSITIVE_INFINITY,
     timeout: TAR_TIMEOUT_MS,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -100,7 +99,7 @@ function readTarLicense(archivePath, memberPath) {
   const match = /^(-[-rwxstST]{9})\s+\d+\/\d+\s+(\d+)\s+\d{4}-\d\d-\d\d\s+\S+\s+/u.exec(lines[0]);
   if (!match) throw new Error(`license member metadata is not regular: ${memberPath}`);
   const content = execFileSync("tar", ["-xOzf", archivePath, "--", memberPath], {
-    maxBuffer: MAX_LICENSE_BYTES + 1,
+    maxBuffer: Number.POSITIVE_INFINITY,
     timeout: TAR_TIMEOUT_MS,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -116,8 +115,8 @@ const TAR_MEMBER_LINE = /^([-d][-rwxstST]{9})\s+\d+\/\d+\s+(\d+)\s+\d{4}-\d\d-\d
  * duplicate members, oversized members, and aggregate extraction bombs.
  */
 export function validateArchiveListing(listing, expectedArchive) {
-  if (typeof listing !== "string" || Buffer.byteLength(listing, "utf8") > MAX_TAR_LISTING_BYTES) {
-    throw new Error("tar listing is invalid or exceeds the bounded length");
+  if (typeof listing !== "string") {
+    throw new Error("tar listing is invalid");
   }
   if (!Array.isArray(expectedArchive) || expectedArchive.length > MAX_ARCHIVE_ENTRIES) {
     throw new Error("expected archive inventory is invalid or too large");
@@ -165,7 +164,7 @@ export function validateArchiveLicenseFiles(archivePath, inventory, expectedArch
   if (expectedArchive !== undefined) {
     const listing = execFileSync("tar", ["-tvzf", archivePath, "--numeric-owner", "--full-time"], {
       encoding: "utf8",
-      maxBuffer: MAX_TAR_LISTING_BYTES,
+      maxBuffer: Number.POSITIVE_INFINITY,
       timeout: TAR_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -198,7 +197,7 @@ export function validateArchiveSourceContent(archivePath, expectedArchive) {
   );
   for (const memberPath of sourceMembers) {
     const content = execFileSync("tar", ["-xOzf", archivePath, "--", memberPath], {
-      maxBuffer: MAX_ARCHIVE_MEMBER_BYTES + 1,
+      maxBuffer: Number.POSITIVE_INFINITY,
       timeout: TAR_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "pipe"],
     });

@@ -7,12 +7,14 @@ import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/index.js";
 import {
   initStorageForNewSession,
   markBackupWorkPending,
+  openStorage,
   observeBackupProgress,
   waitForBackupSettled,
   withStorageDeadline,
   withRefreshedTokens,
 } from "../src/storage.js";
 import { acquireProfileLock } from "../src/profile.js";
+import * as profile from "../src/profile.js";
 import type { Session } from "../src/profile.js";
 
 const SESSION: Session = {
@@ -85,6 +87,54 @@ describe("OIDC session refresh persistence", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("preserves cancellation when opening storage cannot release its profile lock", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-open-cancel-lock-"));
+    const release = vi.fn(() => {
+      throw new Error("lock release failed");
+    });
+    const acquireSpy = vi.spyOn(profile, "acquireProfileLock").mockReturnValue({ release } as never);
+    let failure: unknown;
+    try {
+      await openStorage(dir, AbortSignal.abort());
+    } catch (error) {
+      failure = error;
+    } finally {
+      acquireSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors.map(String)).toEqual([
+      "Error: operation cancelled",
+      "Error: lock release failed",
+    ]);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves cancellation when new-session storage cannot release its profile lock", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-new-session-cancel-lock-"));
+    const release = vi.fn(() => {
+      throw new Error("lock release failed");
+    });
+    const acquireSpy = vi.spyOn(profile, "acquireProfileLock").mockReturnValue({ release } as never);
+    let failure: unknown;
+    try {
+      await initStorageForNewSession(SESSION, dir, undefined, AbortSignal.abort());
+    } catch (error) {
+      failure = error;
+    } finally {
+      acquireSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors.map(String)).toEqual([
+      "Error: operation cancelled",
+      "Error: lock release failed",
+    ]);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("server-side key backup settling", () => {
@@ -132,17 +182,15 @@ describe("server-side key backup settling", () => {
     expect(isRecoverySetup).not.toHaveBeenCalled();
   });
 
-  it("aborts and joins a storage operation before returning its deadline", async () => {
+  it("aborts a storage operation before returning its deadline", async () => {
     const controller = new AbortController();
-    let cancellationJoined = false;
+    let cancellationObserved = false;
     await expect(
       withStorageDeadline(
         (operationSignal) => new Promise<boolean>((_resolve, reject) => {
           operationSignal.addEventListener("abort", () => {
-            setTimeout(() => {
-              cancellationJoined = true;
-              reject(new Error("stopped"));
-            }, 5);
+            cancellationObserved = true;
+            reject(operationSignal.reason);
           }, { once: true });
         }),
         10,
@@ -150,7 +198,7 @@ describe("server-side key backup settling", () => {
         "storage operation timed out",
       ),
     ).rejects.toThrow("storage operation timed out");
-    expect(cancellationJoined).toBe(true);
+    expect(cancellationObserved).toBe(true);
   });
 
   it("does not invoke a scheduled storage operation after cancellation wins the race", async () => {
@@ -189,49 +237,28 @@ describe("server-side key backup settling", () => {
     }
   });
 
-  it("bounds a storage operation that ignores cancellation", async () => {
+  it("retains a cancellation cleanup failure with the storage deadline", async () => {
     vi.useFakeTimers();
     try {
-      const controller = new AbortController();
+      const cleanupFailure = new Error("client stop failed");
       const pending = withStorageDeadline(
         () => new Promise<boolean>(() => {}),
         10,
-        controller.signal,
-        "storage operation timed out",
-      );
-      const failure = expect(pending).rejects.toThrow("storage operation timed out");
-      await vi.advanceTimersByTimeAsync(10);
-      await vi.advanceTimersByTimeAsync(5_000);
-      await failure;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("stops a storage client that resolves after the deadline has returned", async () => {
-    vi.useFakeTimers();
-    try {
-      const stopClient = vi.fn();
-      const lateStorage = { getClient: () => ({ stopClient }) };
-      const pending = withStorageDeadline(
-        () => new Promise<typeof lateStorage>((resolve) => {
-          setTimeout(() => resolve(lateStorage), 10_000);
-        }),
-        10,
         new AbortController().signal,
-        "storage client initialization timed out",
-        undefined,
-        (storage) => storage.getClient().stopClient(),
+        "storage operation timed out",
+        () => {
+          throw cleanupFailure;
+        },
       );
-      const failure = expect(pending).rejects.toThrow("storage client initialization timed out");
-
+      const failure = pending.catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(10);
       await vi.advanceTimersByTimeAsync(5_000);
-      await failure;
-      expect(stopClient).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(stopClient).toHaveBeenCalledTimes(1);
+      const observed = await failure;
+      expect(observed).toBeInstanceOf(AggregateError);
+      expect((observed as AggregateError).errors).toEqual([
+        expect.objectContaining({ message: "storage operation timed out" }),
+        cleanupFailure,
+      ]);
     } finally {
       vi.useRealTimers();
     }

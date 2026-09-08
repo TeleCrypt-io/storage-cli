@@ -2,6 +2,9 @@
 
 The command-line interface for TeleCrypt.io end-to-end encrypted Matrix storage.
 
+Current TeleCrypt project facts and product decisions are maintained only in the canonical
+[`llms.txt`](https://telecrypt.io/llms.txt); this README documents the CLI package and commands.
+
 The CLI runs on Linux and requires Node.js `>=24.20.0`; release tooling verifies that exact Node.js
 version and the bundled npm `11.19.0`.
 

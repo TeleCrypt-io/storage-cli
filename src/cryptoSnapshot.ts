@@ -35,6 +35,7 @@ import {
   type ProfileLock,
 } from "./profile.js";
 import { MAX_PRIVATE_FILE_BYTES } from "./limits.js";
+import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
 
 interface IndexSpec {
   name: string;
@@ -219,12 +220,18 @@ function readAllRecords(
       else resolve(out);
     };
     const onAbort = () => {
+      const cancellationError = snapshotAbortError(signal);
       try {
         tx.abort();
-      } catch {
-        // Preserve the cancellation result if the transaction is already done.
+      } catch (cleanupError) {
+        finish(new AggregateError(
+          [cancellationError, cleanupError],
+          "crypto snapshot read cancellation failed",
+          { cause: cancellationError },
+        ));
+        return;
       }
-      finish(snapshotAbortError(signal));
+      finish(cancellationError);
     };
     const req = store.openCursor();
     req.onerror = () => finish(req.error ?? new Error("IndexedDB cursor failed"));
@@ -238,12 +245,18 @@ function readAllRecords(
         try {
           accountSnapshotRecord(budget, record);
         } catch (error) {
-          finish(error instanceof Error ? error : new Error(String(error)));
+          const primaryError = error instanceof Error ? error : new Error(String(error));
           try {
             tx.abort();
-          } catch {
-            // The transaction may already have closed after the cursor error.
+          } catch (cleanupError) {
+            finish(new AggregateError(
+              [primaryError, cleanupError],
+              "crypto snapshot validation and transaction cleanup failed",
+              { cause: primaryError },
+            ));
+            return;
           }
+          finish(primaryError);
           return;
         }
         out.push(record);
@@ -276,6 +289,8 @@ export async function exportIndexedDB(signal?: AbortSignal): Promise<CryptoSnaps
     }
     if (dbs.length >= MAX_SNAPSHOT_DATABASES) throw new Error("crypto snapshot contains too many databases");
     const db = await openDatabase(idb, info.name, info.version, signal);
+    let primaryError: unknown;
+    let hasPrimary = false;
     try {
       const storeNames = Array.from(db.objectStoreNames);
       const stores: StoreSpec[] = [];
@@ -317,8 +332,14 @@ export async function exportIndexedDB(signal?: AbortSignal): Promise<CryptoSnaps
       }
 
       dbs.push({ name: info.name, version: db.version, stores, records });
-    } finally {
-      db.close();
+    } catch (error) {
+      hasPrimary = true;
+      primaryError = error;
+    }
+    const cleanupFailures: unknown[] = [];
+    attemptCleanup(cleanupFailures, () => db.close());
+    if (hasPrimary || cleanupFailures.length > 0) {
+      throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "crypto snapshot database cleanup failed");
     }
   }
 
@@ -376,6 +397,8 @@ export async function importIndexedDB(snapshot: CryptoSnapshot, signal?: AbortSi
       }
     });
 
+    let primaryError: unknown;
+    let hasPrimary = false;
     try {
       const storeNames = dbSnap.stores.map((s) => s.name);
       if (storeNames.length > 0) {
@@ -395,8 +418,14 @@ export async function importIndexedDB(snapshot: CryptoSnapshot, signal?: AbortSi
         }
         await promisifyTxDone(tx, signal);
       }
-    } finally {
-      db.close();
+    } catch (error) {
+      hasPrimary = true;
+      primaryError = error;
+    }
+    const cleanupFailures: unknown[] = [];
+    attemptCleanup(cleanupFailures, () => db.close());
+    if (hasPrimary || cleanupFailures.length > 0) {
+      throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "crypto snapshot database cleanup failed");
     }
   }
 }
@@ -408,8 +437,8 @@ export function loadSnapshotFromDisk(path: string, heldLock?: ProfileLock): Cryp
   let snapshot: unknown;
   try {
     snapshot = v8.deserialize(buf);
-  } catch {
-    throw new Error("crypto snapshot is unreadable; remove it and retry");
+  } catch (error) {
+    throw withCause(new Error("crypto snapshot is unreadable; remove it and retry"), error);
   }
   validateSnapshot(snapshot);
   return snapshot;

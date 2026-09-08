@@ -2,6 +2,7 @@ import fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { StorageError } from "@telecrypt-io/storage/core";
+import { attemptCleanup, throwCombinedFailures } from "./failure.js";
 import { MAX_MEDIA_FILE_BYTES } from "./limits.js";
 
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
@@ -20,23 +21,36 @@ function openSecureDirectory(directory: string): number {
   const resolved = path.resolve(directory);
   if (path.parse(resolved).root !== "/") throw securePathError();
 
-  let fd = fs.openSync("/", DIRECTORY_FLAGS);
+  let fd: number | undefined = fs.openSync("/", DIRECTORY_FLAGS);
+  let fdCloseAttempted = false;
+  let primaryError: unknown;
+  let hasPrimary = false;
+  const cleanupFailures: unknown[] = [];
   try {
     for (const component of resolved.split("/").filter(Boolean)) {
-      const next = fs.openSync(path.join(PROC_FD_ROOT, String(fd), component), DIRECTORY_FLAGS);
-      fs.closeSync(fd);
+      const currentFd = fd!;
+      const next = fs.openSync(path.join(PROC_FD_ROOT, String(currentFd), component), DIRECTORY_FLAGS);
+      fdCloseAttempted = true;
+      try {
+        fs.closeSync(currentFd);
+      } catch (error) {
+        primaryError = error;
+        hasPrimary = true;
+        attemptCleanup(cleanupFailures, () => fs.closeSync(next));
+        break;
+      }
+      fd = undefined;
       fd = next;
+      fdCloseAttempted = false;
     }
-    return fd;
   } catch (error) {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      // Preserve the fail-closed result if cleanup itself also fails.
-    }
-    if (error instanceof StorageError) throw error;
-    throw securePathError();
+    primaryError = error instanceof StorageError ? error : securePathError();
+    hasPrimary = true;
   }
+  if (!hasPrimary && fd !== undefined) return fd;
+
+  if (fd !== undefined && !fdCloseAttempted) attemptCleanup(cleanupFailures, () => fs.closeSync(fd!));
+  throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "secure directory cleanup failed");
 }
 
 function anchoredPath(directoryFd: number, name: string): string {
@@ -62,6 +76,9 @@ function metadataChanged(before: fs.Stats, after: fs.Stats): boolean {
 export function readBoundedInput(filePath: string): Buffer {
   const parentFd = openSecureDirectory(path.dirname(filePath));
   let fd: number | undefined;
+  let result: Buffer | undefined;
+  let primaryError: unknown;
+  let hasPrimary = false;
   try {
     fd = fs.openSync(
       anchoredPath(parentFd, path.basename(filePath)),
@@ -94,25 +111,32 @@ export function readBoundedInput(filePath: string): Buffer {
     if (metadataChanged(opened, final) || !digest.equals(verifyHash.digest())) {
       throw new StorageError("input file changed while it was being read");
     }
-    return data;
+    result = data;
   } catch (error) {
-    if (error instanceof StorageError) throw error;
-    throw new StorageError("input file could not be opened");
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-    fs.closeSync(parentFd);
+    hasPrimary = true;
+    primaryError = error instanceof StorageError ? error : new StorageError("input file could not be opened");
   }
+  const cleanupFailures: unknown[] = [];
+  if (fd !== undefined) attemptCleanup(cleanupFailures, () => fs.closeSync(fd!));
+  attemptCleanup(cleanupFailures, () => fs.closeSync(parentFd));
+  if (hasPrimary || cleanupFailures.length > 0) {
+    throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "input file cleanup failed");
+  }
+  return result!;
 }
 
-export function writeBoundedDownload(destination: string, bytes: Uint8Array): void {
-  if (bytes.byteLength > MAX_MEDIA_FILE_BYTES) throw new StorageError("download exceeds the 128 MiB limit");
+export function writeDownload(destination: string, bytes: Uint8Array): void {
   const parentFd = openSecureDirectory(path.dirname(destination));
   let fd: number | undefined;
-  const name = path.basename(destination);
-  const temporaryName = `.${name}-${process.pid}-${randomUUID()}.tmp`;
-  const temporary = anchoredPath(parentFd, temporaryName);
-  const target = anchoredPath(parentFd, name);
+  let fdCloseAttempted = false;
+  let temporary: string | undefined;
+  let primaryError: unknown;
+  let hasPrimary = false;
   try {
+    const name = path.basename(destination);
+    const temporaryName = `.${name}-${process.pid}-${randomUUID()}.tmp`;
+    temporary = anchoredPath(parentFd, temporaryName);
+    const target = anchoredPath(parentFd, name);
     try {
       fs.lstatSync(target);
       throw new StorageError("download destination already exists; choose a new path");
@@ -126,6 +150,7 @@ export function writeBoundedDownload(destination: string, bytes: Uint8Array): vo
     );
     fs.writeFileSync(fd, bytes);
     fs.fsyncSync(fd);
+    fdCloseAttempted = true;
     fs.closeSync(fd);
     fd = undefined;
     try {
@@ -141,13 +166,23 @@ export function writeBoundedDownload(destination: string, bytes: Uint8Array): vo
     }
     fs.rmSync(temporary);
     fs.fsyncSync(parentFd);
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-    try {
-      fs.rmSync(temporary);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    fs.closeSync(parentFd);
+  } catch (error) {
+    hasPrimary = true;
+    primaryError = error;
+  }
+  const cleanupFailures: unknown[] = [];
+  if (fd !== undefined && !fdCloseAttempted) attemptCleanup(cleanupFailures, () => fs.closeSync(fd!));
+  if (temporary !== undefined) {
+    attemptCleanup(cleanupFailures, () => {
+      try {
+        fs.rmSync(temporary!);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    });
+  }
+  attemptCleanup(cleanupFailures, () => fs.closeSync(parentFd));
+  if (hasPrimary || cleanupFailures.length > 0) {
+    throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "download cleanup failed");
   }
 }

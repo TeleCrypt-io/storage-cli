@@ -1,5 +1,4 @@
 const MAX_IDENTITY_BYTES = 64 * 1024;
-const MAX_RELEASE_LIST_BYTES = 1_048_576;
 const COMMIT = /^(?!0{40}$)[0-9a-f]{40}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 
@@ -52,7 +51,7 @@ export function validateSdkIdentity(text, expected) {
 }
 
 export function isConfirmedNotFound(status, stderr) {
-  if (status !== 1 || typeof stderr !== "string" || Buffer.byteLength(stderr, "utf8") > MAX_IDENTITY_BYTES) return false;
+  if (status !== 1 || typeof stderr !== "string") return false;
   const lines = stderr.trim().split(/\r?\n/u).filter(Boolean);
   return lines.length === 1 && /^gh:\s+.+\(HTTP 404\)$/u.test(lines[0]);
 }
@@ -68,9 +67,7 @@ function validateReleaseListEntry(release, seenIds) {
 }
 
 export function parseReleaseList(text) {
-  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > MAX_RELEASE_LIST_BYTES) {
-    throw new Error("GitHub Release list is missing or exceeds the bounded length");
-  }
+  if (typeof text !== "string") throw new Error("GitHub Release list is missing");
   if (text === "") return [];
   if (!text.endsWith("\n")) throw new Error("GitHub Release list pagination is incomplete");
   const lines = text.split(/\r?\n/u);

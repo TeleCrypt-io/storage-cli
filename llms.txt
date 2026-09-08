@@ -1,27 +1,8 @@
 # TeleCrypt.io Storage CLI
 
-> End-to-end encrypted file storage and sharing on Matrix, distributed only as exact GitHub
-> Release archives. The canonical command and recovery reference is [CLI.md](./CLI.md).
+The sole public authority for current TeleCrypt project facts, architecture, responsibilities,
+principles, limits, and user-visible behavior is https://telecrypt.io/llms.txt.
 
-TeleCrypt.io Storage CLI provides the `telecrypt-io storage` command group over one exact
-`@telecrypt-io/storage` library version. It supports MAS/OIDC device authorization, private local
-profiles, shared vaults, nested folders, encrypted file upload/download, and server-side recovery-key
-setup/export and restore. It never sends a Matrix password login and the server cannot decrypt files.
-
-Install only an existing exact release archive, never an NPM registry package. Use the command
-reference for the immutable archive URL, runtime requirement, `--json` contract, profile security,
-sharing, file, logout, and recovery behavior.
-
-For agents, treat exit code 0 as success and nonzero as failure; with `--json`, parse the structured
-success output on stdout or the error object on stderr. Preserve the Recovery Key: it is required to
-restore encrypted keys on a new device. Logout revokes the server session before deleting local
-credentials; if revocation fails, the profile remains for retry.
-
-The CLI is Linux-only and requires Node.js 24.20.0 or newer. Set `TELECRYPT_IO_STORAGE_HOME` only
-to a canonical absolute path; `storage login --no-browser` suppresses the optional browser launch.
-Profile confidentiality comes from owner-only filesystem permissions; the
-profile's bearer credentials and cryptographic state do not have an additional application-level
-at-rest encryption wrapper.
-
-Development and real-stack acceptance are local-only. The Storage SDK repository owns the disposable
-fixture; Harness acceptance is never hosted CI and never targets a production server.
+Repository-specific Storage CLI usage, command and recovery reference, development instructions,
+and release procedures remain in [CLI.md](./CLI.md), [README.md](./README.md), and
+[RELEASING.md](./RELEASING.md).

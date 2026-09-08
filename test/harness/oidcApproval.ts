@@ -1,7 +1,7 @@
 import {
-  cancelReadableStreamReaderWithinBound,
   readReadableStreamChunkWithAbort,
 } from "../../src/cancellation.js";
+import { safeErrorMessage } from "../../src/output.js";
 
 /**
  * Approves a device grant against the disposable local MAS through its real
@@ -9,8 +9,6 @@ import {
  * solely to approve MAS OAuth, never by the product CLI's login flow.
  */
 const MAS_BASE = new URL("http://localhost:8008/auth/");
-const MAX_RESPONSE_BYTES = 1 << 20;
-const MAX_COOKIE_HEADER_BYTES = 64 * 1024;
 const APPROVAL_TIMEOUT_MS = 15_000;
 
 function cancellationError(): Error {
@@ -34,9 +32,6 @@ async function fetchWithinApprovalBound(
     if (signal.aborted) throw cancellationError();
     return fetch(input, init);
   });
-  // A fetch implementation may ignore the signal and settle after this hard
-  // boundary has returned; consume a late rejection in that case.
-  request.catch(() => undefined);
   try {
     return await Promise.race([request, aborted]);
   } finally {
@@ -90,22 +85,16 @@ class CookieJar {
       const value = pair.slice(equals + 1);
       if (
         /[\u0000-\u001f\u007f-\u009f]/u.test(name) ||
-        /[\u0000-\u001f\u007f-\u009f]/u.test(value) ||
-        Buffer.byteLength(name, "utf8") > 1024 ||
-        Buffer.byteLength(value, "utf8") > MAX_COOKIE_HEADER_BYTES
+        /[\u0000-\u001f\u007f-\u009f]/u.test(value)
       ) {
-        throw new Error("approveDeviceCode: cookie exceeds the output limit");
+        throw new Error("approveDeviceCode: cookie contains a control character");
       }
       this.cookies.set(name, value);
     }
   }
 
   private header(): string {
-    const header = [...this.cookies.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
-    if (Buffer.byteLength(header, "utf8") > MAX_COOKIE_HEADER_BYTES) {
-      throw new Error("approveDeviceCode: cookie header exceeds the output limit");
-    }
-    return header;
+    return [...this.cookies.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
   }
 
   async get(location: string): Promise<Response> {
@@ -144,38 +133,39 @@ class CookieJar {
   }
 }
 
-async function readBoundedHtml(response: Response, signal: AbortSignal): Promise<string> {
-  const declared = response.headers.get("content-length");
-  if (declared !== null && Number.isSafeInteger(Number(declared)) && Number(declared) > MAX_RESPONSE_BYTES) {
-    throw new Error("approveDeviceCode: response exceeds the output limit");
+function htmlDiagnostic(html: string, redactions: string[]): string {
+  for (const secret of redactions) {
+    if (secret) html = html.split(secret).join("<redacted>");
   }
+  return safeErrorMessage(html.replace(/(<input\b[^>]*\bvalue\s*=\s*)(["'])(.*?)\2/giu, "$1$2<redacted>$2"));
+}
+
+async function readHtml(response: Response, signal: AbortSignal, redactions: string[]): Promise<string> {
   if (!response.body) return "";
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
-  let total = 0;
   const abortError = cancellationError();
-  let readFailed = false;
+  let failure: unknown;
   try {
     while (true) {
       const next = await readReadableStreamChunkWithAbort(reader, signal, abortError);
       if (next.done) break;
-      total += next.value.byteLength;
-      if (total > MAX_RESPONSE_BYTES) {
-        await cancelReadableStreamReaderWithinBound(reader);
-        throw new Error("approveDeviceCode: response exceeds the output limit");
-      }
       chunks.push(next.value);
     }
   } catch (error) {
-    readFailed = true;
-    throw error;
+    const partial = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+    failure = new Error(
+      `MAS response read failed; body received before failure:\n${htmlDiagnostic(partial, redactions)}`,
+      { cause: error },
+    );
   } finally {
     try {
       reader.releaseLock();
     } catch (error) {
-      if (!readFailed) throw error;
+      failure = failure === undefined ? error : new AggregateError([failure, error], "MAS response read and reader cleanup failed");
     }
   }
+  if (failure !== undefined) throw failure;
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
@@ -194,32 +184,35 @@ export async function approveDeviceCodeViaHttp(
   const jar = new CookieJar(signal);
   try {
     let response = await jar.get(new URL("login", MAS_BASE).toString());
-    let csrf = extractCsrf(await readBoundedHtml(response, signal));
+    let csrf = extractCsrf(await readHtml(response, signal, [username, password, userCode]));
     response = await jar.post(new URL("login", MAS_BASE).toString(), { csrf, username, password });
     if (response.status !== 303) {
-      throw new Error(`approveDeviceCode: login did not redirect (${response.status})`);
+      const redactions = [username, password, userCode, csrf];
+      throw new Error(`approveDeviceCode: login did not redirect (${response.status}): ${htmlDiagnostic(await readHtml(response, signal, redactions), redactions)}`);
     }
     await jar.follow(response);
 
     const linkUrl = new URL("link", MAS_BASE);
     response = await jar.get(linkUrl.toString());
-    const linkHtml = await readBoundedHtml(response, signal);
+    const linkHtml = await readHtml(response, signal, [username, password, userCode, csrf]);
     if (response.status !== 200) {
-      throw new Error(`approveDeviceCode: device-link form failed (${response.status})`);
+      throw new Error(`approveDeviceCode: device-link form failed (${response.status}): ${htmlDiagnostic(linkHtml, [username, password, userCode, csrf])}`);
     }
     csrf = extractCsrf(linkHtml);
     const linkAction = extractFormAction(linkHtml, linkUrl);
     response = await jar.post(linkAction, { csrf, code: userCode });
     const devicePath = response.headers.get("location");
     if (response.status !== 303 || !devicePath) {
-      throw new Error(`approveDeviceCode: device-link submission failed (${response.status})`);
+      const redactions = [username, password, userCode, csrf];
+      throw new Error(`approveDeviceCode: device-link submission failed (${response.status}): ${htmlDiagnostic(await readHtml(response, signal, redactions), redactions)}`);
     }
     response = await jar.follow(response);
 
-    csrf = extractCsrf(await readBoundedHtml(response, signal));
+    csrf = extractCsrf(await readHtml(response, signal, [username, password, userCode, csrf]));
     response = await jar.post(devicePath, { csrf, confirm_device: "on", action: "consent" });
     if (response.status !== 200) {
-      throw new Error(`approveDeviceCode: consent failed (${response.status})`);
+      const redactions = [username, password, userCode, csrf];
+      throw new Error(`approveDeviceCode: consent failed (${response.status}): ${htmlDiagnostic(await readHtml(response, signal, redactions), redactions)}`);
     }
   } finally {
     clearTimeout(timeout);

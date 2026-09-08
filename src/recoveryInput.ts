@@ -1,5 +1,6 @@
 import { StorageError } from "@telecrypt-io/storage/core";
 import { runWithAbortRace } from "./cancellation.js";
+import { attemptCleanup } from "./failure.js";
 
 export const MAX_RECOVERY_KEY_BYTES = 16 * 1024;
 
@@ -31,11 +32,12 @@ export async function readRecoveryKeyFromStdin(
   }
 
   const interrupted = new StorageError("recovery key input interrupted");
+  let abortCleanupError: unknown;
   const onAbort = () => {
     try {
       stdin.destroy();
-    } catch {
-      // Preserve the cancellation result if stdin is already closed.
+    } catch (error) {
+      abortCleanupError = error;
     }
   };
   if (signal.aborted) throw interrupted;
@@ -53,11 +55,17 @@ export async function readRecoveryKeyFromStdin(
     if (signal.aborted) throw interrupted;
     return requireRecoveryKey(Buffer.concat(chunks).toString("utf8"));
   })();
-  // A non-cooperative stream may leave its async iterator pending after
-  // destroy(); consume its late rejection when the abort race returns.
-  reading.catch(() => undefined);
   try {
     return await runWithAbortRace(() => reading, signal, interrupted);
+  } catch (error) {
+    if (abortCleanupError !== undefined) {
+      throw new AggregateError(
+        [error, abortCleanupError],
+        "recovery key input and cancellation cleanup failed",
+        { cause: error },
+      );
+    }
+    throw error;
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
@@ -85,27 +93,39 @@ export async function promptForRecoveryKey(
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
-      stdin.off("data", onData);
-      stdin.off("end", onEnd);
-      stdin.off("close", onClose);
-      signal.removeEventListener("abort", onAbort);
-      let restoreError: unknown;
+      const failures: unknown[] = [];
+      if (error !== undefined) failures.push(error);
+      attemptCleanup(failures, () => stdin.off("data", onData));
+      attemptCleanup(failures, () => stdin.off("end", onEnd));
+      attemptCleanup(failures, () => stdin.off("close", onClose));
+      attemptCleanup(failures, () => signal.removeEventListener("abort", onAbort));
       try {
         if (rawModeEnabled || stdin.isRaw) stdin.setRawMode(wasRaw ?? false);
       } catch (err) {
-        restoreError = err;
-      } finally {
-        stdin.pause();
+        failures.push(err);
       }
-      write("\n");
-      if (error) reject(error);
-      else if (restoreError) reject(restoreError);
-      else {
-        try {
-          resolve(requireRecoveryKey(chars.join("")));
-        } catch (err) {
-          reject(err);
-        }
+      try {
+        stdin.pause();
+      } catch (err) {
+        failures.push(err);
+      }
+      try {
+        write("\n");
+      } catch (err) {
+        failures.push(err);
+      }
+      if (failures.length === 1) {
+        reject(failures[0]);
+        return;
+      }
+      if (failures.length > 1) {
+        reject(new AggregateError(failures, "recovery key input cleanup failed"));
+        return;
+      }
+      try {
+        resolve(requireRecoveryKey(chars.join("")));
+      } catch (err) {
+        reject(err);
       }
     };
     const onData = (data: Buffer | string) => {

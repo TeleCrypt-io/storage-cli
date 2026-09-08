@@ -6,6 +6,7 @@ import {
   readPendingSession,
   readSession,
   profileDir,
+  throwWithLockReleaseFailure,
   writeLogoutMarkerUnlocked,
   writePendingSessionUnlocked,
   writeSessionUnlocked,
@@ -19,58 +20,110 @@ import {
   readReadableStreamChunkWithAbort,
   settlePromiseWithin,
 } from "./cancellation.js";
+import { throwCombinedFailures, withCause } from "./failure.js";
+import { safeDiagnosticText } from "./output.js";
 
 const DEFAULT_LOGOUT_TIMEOUT_MS = 10_000;
 const MAX_LOGOUT_TIMEOUT_MS = 120_000;
-const MAX_LOGOUT_RESPONSE_BYTES = 64 * 1024;
+
+async function cancelLogoutReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  const cancellation = Promise.resolve().then(() => reader.cancel());
+  const settlement = await settlePromiseWithin(cancellation);
+  if (settlement.status === "rejected") throw settlement.error;
+  if (settlement.status === "timeout") {
+    throw new StorageError("server logout response cleanup timed out");
+  }
+}
+
+async function cleanupLogoutReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  cancel: boolean,
+): Promise<unknown[]> {
+  const failures: unknown[] = [];
+  if (cancel) {
+    try {
+      await cancelLogoutReader(reader);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  try {
+    reader.releaseLock();
+  } catch (error) {
+    failures.push(error);
+  }
+  return failures;
+}
+
+async function cleanupLogoutResponseBody(response: Response): Promise<unknown[]> {
+  if (!response.body) return [];
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = response.body.getReader();
+  } catch (error) {
+    return [error];
+  }
+  return cleanupLogoutReader(reader, true);
+}
 
 async function consumeLogoutResponse(
   response: Response,
-  controller: AbortController,
-  readSignal: AbortSignal = controller.signal,
-): Promise<unknown> {
-  const declaredLength = response.headers.get("content-length");
-  if (declaredLength !== null && Number.isFinite(Number(declaredLength)) && Number(declaredLength) > MAX_LOGOUT_RESPONSE_BYTES) {
-    const error = new StorageError("server logout response exceeds the output limit");
-    controller.abort(error);
-    throw error;
-  }
+  readSignal: AbortSignal,
+): Promise<{ value: unknown; text: string } | undefined> {
   if (!response.body) return undefined;
   const reader = response.body.getReader();
   const cancellationError = new StorageError("server logout response read cancelled");
-  let total = 0;
   const chunks: Uint8Array[] = [];
-  let readFailed = false;
+  let primaryError: unknown;
+  let hasPrimary = false;
   try {
     while (true) {
       const chunk = await readReadableStreamChunkWithAbort(reader, readSignal, cancellationError);
       if (chunk.done) break;
-      total += chunk.value.byteLength;
-      if (total > MAX_LOGOUT_RESPONSE_BYTES) {
-        const error = new StorageError("server logout response exceeds the output limit");
-        controller.abort(error);
-        await cancelReadableStreamReaderWithinBound(reader);
-        throw error;
-      }
       chunks.push(chunk.value);
     }
   } catch (error) {
-    readFailed = true;
-    throw error;
-  } finally {
-    try {
-      reader.releaseLock();
-    } catch (error) {
-      // Preserve the body/cancellation error if a non-conforming reader
-      // rejects releaseLock while a read request is still pending.
-      if (!readFailed) throw error;
-    }
+    hasPrimary = true;
+    primaryError = error;
+  }
+  const partialText = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+  if (hasPrimary) {
+    const bodyDiagnostic = new Error(`server logout response body: ${safeDiagnosticText(partialText)}`);
+    primaryError = withCause(
+      new StorageError("server logout response body could not be read"),
+      new AggregateError(
+        [primaryError, bodyDiagnostic],
+        "server logout response read failed with a partial body",
+        { cause: primaryError },
+      ),
+    );
+  }
+  // readReadableStreamChunkWithAbort owns cancellation after a read failure;
+  // this boundary only releases the reader so a cancellation failure is not
+  // attempted (and reported) twice.
+  const cleanupFailures = await cleanupLogoutReader(reader, false);
+  if (!hasPrimary && cleanupFailures.length > 0 && chunks.length > 0) {
+    throw new AggregateError(
+      [...cleanupFailures, new Error(`server logout response body: ${safeDiagnosticText(partialText)}`)],
+      "server logout response cleanup failed",
+    );
+  }
+  if (hasPrimary || cleanupFailures.length > 0) {
+    throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "server logout response cleanup failed");
   }
   if (chunks.length === 0) return undefined;
+  const text = partialText;
   try {
-    return JSON.parse(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")) as unknown;
-  } catch {
-    return undefined;
+    return { value: JSON.parse(text) as unknown, text };
+  } catch (error) {
+    throw withCause(
+      new StorageError("server logout response is not valid JSON"),
+      new AggregateError(
+        [error, new Error(`server logout response body: ${safeDiagnosticText(text)}`)],
+        "server logout response JSON parse failed",
+        { cause: error },
+      ),
+    );
   }
 }
 
@@ -81,6 +134,19 @@ function isUnknownAccessTokenResponse(status: number, body: unknown): boolean {
     typeof body === "object" &&
     (body as { errcode?: unknown }).errcode === "M_UNKNOWN_TOKEN"
   );
+}
+
+function localLogoutCleanupError(cause: unknown): StorageError {
+  return withCause(
+    new StorageError("server logout succeeded but local cleanup is incomplete — retry logout"),
+    cause,
+  );
+}
+
+function safeLogoutRequestFailure(error: unknown): StorageError {
+  const primary = error instanceof AggregateError ? error.errors[0] : undefined;
+  const message = primary instanceof StorageError ? primary.message : "server logout request failed";
+  return withCause(new StorageError(message), error);
 }
 
 interface LogoutCredentials {
@@ -170,6 +236,7 @@ export async function requestServerLogout(
   });
   const onExternalAbort = () => {
     if (boundaryError) return;
+    acceptRefreshedCredentials = false;
     boundaryError = new StorageError("server logout cancelled");
     controller.abort(externalSignal?.reason);
     rejectBoundary(boundaryError);
@@ -181,11 +248,14 @@ export async function requestServerLogout(
   }
   const timer = setTimeout(() => {
     if (boundaryError) return;
+    acceptRefreshedCredentials = false;
     boundaryError = new StorageError("server logout request timed out");
     controller.abort(boundaryError);
     rejectBoundary(boundaryError);
   }, timeoutMs);
-  const requestLogout = async (accessToken: string): Promise<{ status: number; body: unknown }> => {
+  const requestLogout = async (
+    accessToken: string,
+  ): Promise<{ status: number; body: unknown; bodyText?: string }> => {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -193,18 +263,24 @@ export async function requestServerLogout(
       signal: controller.signal,
     });
     if (response.url !== endpoint) {
-      controller.abort();
-      throw new StorageError("server logout redirected unexpectedly");
+      const error = new StorageError("server logout redirected unexpectedly");
+      controller.abort(error);
+      const cleanupFailures = await cleanupLogoutResponseBody(response);
+      throwCombinedFailures(error, true, cleanupFailures, "server logout response cleanup failed");
     }
-    const body = await consumeLogoutResponse(response, controller);
-    return { status: response.status, body };
+    const consumed = await consumeLogoutResponse(response, controller.signal);
+    return { status: response.status, body: consumed?.value, bodyText: consumed?.text };
   };
   const operation = (async () => {
     let credentials: LogoutCredentials = session;
     let logoutResponse = await requestLogout(credentials.accessToken);
     if (logoutResponse.status === 200 || logoutResponse.status === 204) return;
     if (!isUnknownAccessTokenResponse(logoutResponse.status, logoutResponse.body)) {
-      throw new StorageError(`server logout failed (HTTP ${logoutResponse.status})`);
+      const error = new StorageError(`server logout failed (HTTP ${logoutResponse.status})`);
+      if (logoutResponse.bodyText !== undefined) {
+        withCause(error, new Error(`server logout response body: ${safeDiagnosticText(logoutResponse.bodyText)}`));
+      }
+      throw error;
     }
 
     if (!credentials.refreshToken) return;
@@ -229,18 +305,13 @@ export async function requestServerLogout(
       signal: controller.signal,
     });
     if (refreshResponse.url !== tokenEndpoint) {
-      controller.abort();
-      throw new StorageError("OIDC token refresh redirected unexpectedly");
+      const error = new StorageError("OIDC token refresh redirected unexpectedly");
+      controller.abort(error);
+      const cleanupFailures = await cleanupLogoutResponseBody(refreshResponse);
+      throwCombinedFailures(error, true, cleanupFailures, "server logout response cleanup failed");
     }
-    // A fetch implementation may ignore the deadline's abort and deliver a
-    // refresh response during the bounded cleanup join. Let its already
-    // available body be consumed so rotated credentials can still be
-    // persisted while the join owns the operation. The join still bounds a
-    // body that never settles, and the callback is disabled once it ends.
-    const lateRefreshSignal = boundaryError?.message === "server logout request timed out"
-      ? new AbortController().signal
-      : controller.signal;
-    const refreshBody = await consumeLogoutResponse(refreshResponse, controller, lateRefreshSignal);
+    const consumedRefresh = await consumeLogoutResponse(refreshResponse, controller.signal);
+    const refreshBody = consumedRefresh?.value;
     if (
       refreshResponse.status === 400 &&
       refreshBody &&
@@ -250,7 +321,11 @@ export async function requestServerLogout(
       return;
     }
     if (refreshResponse.status !== 200) {
-      throw new StorageError(`OIDC token refresh failed (HTTP ${refreshResponse.status})`);
+      const error = new StorageError(`OIDC token refresh failed (HTTP ${refreshResponse.status})`);
+      if (consumedRefresh?.text !== undefined) {
+        withCause(error, new Error(`OIDC token refresh response body: ${safeDiagnosticText(consumedRefresh.text)}`));
+      }
+      throw error;
     }
     credentials = refreshedCredentials(credentials, refreshBody);
     if (acceptRefreshedCredentials) {
@@ -258,30 +333,27 @@ export async function requestServerLogout(
     }
     logoutResponse = await requestLogout(credentials.accessToken);
     if (logoutResponse.status !== 200 && logoutResponse.status !== 204) {
-      throw new StorageError(`server logout failed (HTTP ${logoutResponse.status})`);
+      const error = new StorageError(`server logout failed (HTTP ${logoutResponse.status})`);
+      if (logoutResponse.bodyText !== undefined) {
+        withCause(error, new Error(`server logout response body: ${safeDiagnosticText(logoutResponse.bodyText)}`));
+      }
+      throw error;
     }
   })();
-  // The boundary below may return before a broken fetch implementation
-  // settles. Observe the operation immediately so a late rejection remains
-  // handled after this command has reported its bounded failure.
-  operation.catch(() => undefined);
   try {
     await Promise.race([operation, boundary]);
     if (boundaryError) throw boundaryError;
     if (externalSignal?.aborted) throw new StorageError("server logout cancelled");
   } catch (error) {
     if (boundaryError) {
-      await settlePromiseWithin(operation);
-      // Keep accepting a rotated refresh token only while this bounded join
-      // still owns the profile lock. Once the join ends, a non-cooperative
-      // operation may outlive the caller and must not write through a closed
-      // transaction on a later retry.
       acceptRefreshedCredentials = false;
       throw boundaryError;
     }
-    if (externalSignal?.aborted) throw new StorageError("server logout cancelled");
+    if (externalSignal?.aborted) {
+      throw withCause(new StorageError("server logout cancelled"), error);
+    }
     if (error instanceof StorageError) throw error;
-    throw new StorageError("server logout request failed");
+    throw safeLogoutRequestFailure(error);
   } finally {
     clearTimeout(timer);
     acceptRefreshedCredentials = false;
@@ -301,12 +373,15 @@ export interface LogoutResult {
 export function finishRemoteLogout(dir: string = profileDir(), heldLock?: ProfileLock): void {
   try {
     writeLogoutMarkerUnlocked(dir, heldLock);
-  } catch {
+  } catch (markerError) {
     try {
       clearProfileUnlocked(dir, {}, heldLock);
       return;
-    } catch {
-      throw new StorageError("server logout succeeded but local cleanup is incomplete — retry logout");
+    } catch (localCleanupError) {
+      throw localLogoutCleanupError(new AggregateError(
+        [markerError, localCleanupError],
+        "server logout local cleanup failed",
+      ));
     }
   }
   try {
@@ -314,8 +389,8 @@ export function finishRemoteLogout(dir: string = profileDir(), heldLock?: Profil
     // unexpected entry makes cleanup incomplete, a retry can still prove that
     // the remote session was already revoked without using the old token.
     clearProfileUnlocked(dir, { preserveLogoutMarker: true }, heldLock);
-  } catch {
-    throw new StorageError("server logout succeeded but local cleanup is incomplete — retry logout");
+  } catch (localCleanupError) {
+    throw localLogoutCleanupError(localCleanupError);
   }
 }
 
@@ -329,6 +404,8 @@ export async function logoutProfile(
   signal: AbortSignal = commandSignal,
 ): Promise<LogoutResult> {
   const lock = acquireProfileLock(dir);
+  let operationFailed = false;
+  let operationError: unknown;
   try {
     const remoteAlreadyRevoked = hasLogoutMarker(dir, lock);
     const session = readSession(dir, lock);
@@ -360,7 +437,12 @@ export async function logoutProfile(
       hadSession: revocable !== null,
       serverLogout: revocable || remoteAlreadyRevoked ? "revoked" : "not-needed",
     };
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+    throw error;
   } finally {
+    if (operationFailed) throwWithLockReleaseFailure(lock, operationError);
     lock.release();
   }
 }

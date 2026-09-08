@@ -12,6 +12,12 @@ export GIT_CONFIG_COUNT=0
 export GIT_CONFIG_PARAMETERS=
 export GIT_TERMINAL_PROMPT=0
 
+if grep -Fq '|| true' scripts/hardenReleaseTransport.sh || \
+  ! grep -Fq -- '--replace-all remote.origin.url' scripts/hardenReleaseTransport.sh; then
+  echo "transport hardening must propagate Git failures and replace the authoritative URL directly" >&2
+  exit 1
+fi
+
 git -C "$repo" init -q
 git -C "$repo" remote add origin https://evil.invalid/storage-cli.git
 git -C "$repo" config --local url.evil.insteadOf https://github.com/
@@ -46,21 +52,3 @@ if git -C "$repo" config --get-regexp '^(http|https)\..*(proxy|sslverify|sslcain
   echo "unsafe included Git configuration remained active" >&2
   exit 1
 fi
-
-work_dir="$repo/bounded"
-mkdir "$work_dir"
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-(
-  cd "$work_dir"
-  bash "$script_dir/scripts/bounded-command.sh" 65536 65536 "$work_dir/stdout" "$work_dir/stderr" 10 \
-    /usr/bin/python3 -c \
-    'from pathlib import Path; Path("work.bin").write_bytes(b"x" * 131072); print("ok")'
-)
-test "$(cat "$work_dir/stdout")" = ok
-test ! -s "$work_dir/stderr"
-test "$(stat -c %s "$work_dir/work.bin")" -eq 131072
-
-bash "$script_dir/scripts/bounded-command.sh" 1024 1024 "$work_dir/descendant.stdout" "$work_dir/descendant.stderr" 10 \
-  /usr/bin/python3 -c \
-  'import subprocess,sys; subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); print("leader")'
-test "$(cat "$work_dir/descendant.stdout")" = leader

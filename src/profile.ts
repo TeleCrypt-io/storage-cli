@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { expectedMatrixServerName } from "./topology.js";
+import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
 import { MAX_PRIVATE_FILE_BYTES } from "./limits.js";
 
 export { expectedMatrixServerName } from "./topology.js";
@@ -284,14 +285,29 @@ function openSecureProfileDirectory(dir: string): number {
   }
   const resolved = path.resolve(dir);
   if (path.parse(resolved).root !== "/") throw new Error("secure profile path must be absolute");
-  let fd = fs.openSync("/", PROFILE_DIRECTORY_FLAGS);
+  let fd: number | undefined = fs.openSync("/", PROFILE_DIRECTORY_FLAGS);
+  let fdCloseAttempted = false;
+  let primaryError: unknown;
+  let hasPrimary = false;
+  const cleanupFailures: unknown[] = [];
   try {
     const components = resolved.split("/").filter(Boolean);
     for (const [index, component] of components.entries()) {
-      const next = fs.openSync(path.join(PROFILE_PROC_FD_ROOT, String(fd), component), PROFILE_DIRECTORY_FLAGS);
-      fs.closeSync(fd);
+      const currentFd = fd!;
+      const next = fs.openSync(path.join(PROFILE_PROC_FD_ROOT, String(currentFd), component), PROFILE_DIRECTORY_FLAGS);
+      fdCloseAttempted = true;
+      try {
+        fs.closeSync(currentFd);
+      } catch (error) {
+        primaryError = error;
+        hasPrimary = true;
+        attemptCleanup(cleanupFailures, () => fs.closeSync(next));
+        break;
+      }
+      fd = undefined;
       fd = next;
-      const stat = fs.fstatSync(fd);
+      fdCloseAttempted = false;
+      const stat = fs.fstatSync(fd!);
       const final = index === components.length - 1;
       if (!stat.isDirectory()) throw profileSecurityError(dir, "profile path component is not a directory");
       if (final) {
@@ -311,16 +327,18 @@ function openSecureProfileDirectory(dir: string): number {
         }
       }
     }
-    if (components.length === 0) throw profileSecurityError(dir, "the filesystem root cannot be a profile directory");
-    return fd;
-  } catch (error) {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      // Preserve the fail-closed error.
+    if (!hasPrimary && components.length === 0) {
+      throw profileSecurityError(dir, "the filesystem root cannot be a profile directory");
     }
-    throw error;
+  } catch (error) {
+    if (!hasPrimary) {
+      primaryError = error;
+      hasPrimary = true;
+    }
   }
+  if (!hasPrimary && fd !== undefined) return fd;
+  if (fd !== undefined && !fdCloseAttempted) attemptCleanup(cleanupFailures, () => fs.closeSync(fd!));
+  throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "secure profile directory cleanup failed");
 }
 
 function anchoredProfilePath(directoryFd: number, name: string): string {
@@ -439,6 +457,18 @@ export interface ProfileLock {
   release(): void;
 }
 
+export function throwWithLockReleaseFailure(lock: ProfileLock, primary: unknown): never {
+  try {
+    lock.release();
+  } catch (releaseError) {
+    throw new AggregateError(
+      [primary, releaseError],
+      "operation and profile lock cleanup failed",
+    );
+  }
+  throw primary;
+}
+
 /**
  * Holds an exclusive lock for the lifetime of a storage command.  The lock is
  * a private file in the already owner-checked profile directory.  A dead
@@ -452,19 +482,76 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
   const resolvedDirectory = path.resolve(dir);
   const directoryFd = openSecureProfileDirectory(dir);
   const lockPath = anchoredProfilePath(directoryFd, ".profile.lock");
+  const throwWithDirectoryCloseFailure = (primary: unknown, cleanupFailures: unknown[] = []): never => {
+    attemptCleanup(cleanupFailures, () => fs.closeSync(directoryFd));
+    throwCombinedFailures(primary, true, cleanupFailures, "profile lock cleanup failed");
+  };
   const token = randomUUID();
-  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  const lockContents = JSON.stringify({ pid: process.pid, token, startTime: currentProcessStartIdentity });
+  const cleanupCreatedLock = (cleanupFailures: unknown[]): void => {
+    const quarantine = `${lockPath}.${randomUUID()}.failed`;
     try {
-      const fd = fs.openSync(lockPath, flags, 0o600);
+      fs.renameSync(lockPath, quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") cleanupFailures.push(error);
+      return;
+    }
+    try {
+      fs.rmSync(quarantine);
+    } catch (error) {
+      cleanupFailures.push(error);
       try {
-        fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, token, startTime: currentProcessStartIdentity }));
+        if (fs.existsSync(quarantine)) {
+          restoreLockWithoutReplacement(directoryFd, path.basename(quarantine), ".profile.lock");
+        }
+      } catch (restoreError) {
+        cleanupFailures.push(restoreError);
+      }
+    }
+  };
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+  for (;;) {
+    try {
+      let fd: number | undefined = fs.openSync(lockPath, flags, 0o600);
+      let writeError: unknown;
+      let writeFailed = false;
+      try {
+        fs.writeFileSync(fd, lockContents);
         fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
+      } catch (error) {
+        writeFailed = true;
+        writeError = error;
+      }
+      const closeFailures: unknown[] = [];
+      if (fd !== undefined) {
+        attemptCleanup(closeFailures, () => {
+          fs.closeSync(fd!);
+          fd = undefined;
+        });
+      }
+      if (writeFailed || closeFailures.length > 0) {
+        const cleanupFailures: unknown[] = [...closeFailures];
+        cleanupCreatedLock(cleanupFailures);
+        const failures = writeFailed ? [writeError, ...cleanupFailures] : cleanupFailures;
+        throwCombinedFailures(failures[0], true, failures.slice(1), "profile lock file cleanup failed");
       }
       let released = false;
+      let directoryCloseAttempted = false;
+      let directoryCloseFailed = false;
+      let directoryCloseError: unknown;
       let quarantine: string | undefined;
+      const closeDirectory = (): void => {
+        if (directoryCloseFailed) throw directoryCloseError;
+        if (directoryCloseAttempted) return;
+        directoryCloseAttempted = true;
+        try {
+          fs.closeSync(directoryFd);
+        } catch (error) {
+          directoryCloseFailed = true;
+          directoryCloseError = error;
+          throw error;
+        }
+      };
       return {
         directory: resolvedDirectory,
         directoryFd,
@@ -477,9 +564,9 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
                 fs.renameSync(lockPath, quarantine);
               } catch (error) {
                 if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-                  released = true;
                   quarantine = undefined;
-                  fs.closeSync(directoryFd);
+                  closeDirectory();
+                  released = true;
                   return;
                 }
                 throw error;
@@ -499,25 +586,33 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
             } else {
               restoreLockWithoutReplacement(directoryFd, path.basename(quarantine), ".profile.lock");
             }
-            released = true;
             quarantine = undefined;
-            fs.closeSync(directoryFd);
-          } catch {
+            closeDirectory();
+            released = true;
+          } catch (error) {
+            if (directoryCloseFailed) {
+              throw new Error("profile lock directory cleanup failed", { cause: error });
+            }
             // Keep the quarantine path for a same-process retry and surface
             // the failure instead of silently leaving an orphaned profile
             // entry that makes later commands fail for an unrelated reason.
             throw new Error(
               `profile lock cleanup failed; inspect ${quarantine ?? lockPath} and retry`,
+              { cause: error },
             );
           }
         },
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        fs.closeSync(directoryFd);
-        throw error;
+        throwWithDirectoryCloseFailure(error);
       }
-      const owner = readPrivateFileAt(directoryFd, ".profile.lock", 1024);
+      let owner: Buffer | null;
+      try {
+        owner = readPrivateFileAt(directoryFd, ".profile.lock", 1024);
+      } catch (ownerError) {
+        throwWithDirectoryCloseFailure(ownerError);
+      }
       if (!owner) continue;
       let pid: unknown;
       let startTime: unknown;
@@ -526,12 +621,10 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
         pid = parsed?.pid;
         startTime = parsed?.startTime;
       } catch {
-        fs.closeSync(directoryFd);
-        throw new Error("profile lock is invalid; inspect it before retrying");
+        throwWithDirectoryCloseFailure(new Error("profile lock is invalid; inspect it before retrying"));
       }
       if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
-        fs.closeSync(directoryFd);
-        throw new Error("profile lock is invalid; inspect it before retrying");
+        throwWithDirectoryCloseFailure(new Error("profile lock is invalid; inspect it before retrying"));
       }
       let ownerLive = false;
       try {
@@ -548,18 +641,18 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
             process.kill(pid, 0);
             ownerLive = true;
           } catch (secondProbeError) {
-            if ((secondProbeError as NodeJS.ErrnoException).code !== "ESRCH") throw secondProbeError;
+            if ((secondProbeError as NodeJS.ErrnoException).code !== "ESRCH") {
+              throw secondProbeError;
+            }
           }
         }
       } catch (probeError) {
         if ((probeError as NodeJS.ErrnoException).code !== "ESRCH") {
-          fs.closeSync(directoryFd);
-          throw probeError;
+          throwWithDirectoryCloseFailure(probeError);
         }
       }
       if (ownerLive) {
-        fs.closeSync(directoryFd);
-        throw new Error("profile is busy; retry after the other storage command exits");
+        throwWithDirectoryCloseFailure(new Error("profile is busy; retry after the other storage command exits"));
       }
       // Node has no portable compare-and-unlink primitive. Atomically move
       // the pathname to a unique quarantine entry, then compare the bytes
@@ -571,8 +664,7 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
         fs.renameSync(lockPath, quarantine);
       } catch (renameError) {
         if ((renameError as NodeJS.ErrnoException).code === "ENOENT") continue;
-        fs.closeSync(directoryFd);
-        throw renameError;
+        throwWithDirectoryCloseFailure(renameError);
       }
       try {
         const movedOwner = readPrivateFileAt(directoryFd, path.basename(quarantine), 1024);
@@ -585,33 +677,36 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
         }
         if (typeof startTime === "string" && processStartIdentity(pid) === startTime) {
           restoreLockWithoutReplacement(directoryFd, path.basename(quarantine), ".profile.lock");
-          fs.closeSync(directoryFd);
           throw new Error("profile is busy; retry after the other storage command exits");
         }
         fs.rmSync(quarantine);
       } catch (quarantineError) {
+        const cleanupFailures: unknown[] = [];
         try {
           if (fs.existsSync(quarantine)) {
             restoreLockWithoutReplacement(directoryFd, path.basename(quarantine), ".profile.lock");
           }
-        } catch {
-          // Preserve the original failure; the private profile remains
-          // inspectable for a later explicit recovery.
+        } catch (restoreError) {
+          cleanupFailures.push(restoreError);
         }
-        fs.closeSync(directoryFd);
-        throw quarantineError;
+        throwWithDirectoryCloseFailure(quarantineError, cleanupFailures);
       }
     }
   }
-  fs.closeSync(directoryFd);
-  throw new Error("profile is busy; retry after the other storage command exits");
 }
 
 export async function withProfileLock<T>(dir: string, operation: () => Promise<T>): Promise<T> {
   const lock = acquireProfileLock(dir);
+  let operationFailed = false;
+  let operationError: unknown;
   try {
     return await operation();
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+    throw error;
   } finally {
+    if (operationFailed) throwWithLockReleaseFailure(lock, operationError);
     lock.release();
   }
 }
@@ -657,6 +752,9 @@ function readPrivateFileAt(directoryFd: number, name: string, maxBytes: number):
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+  let result: Buffer | undefined;
+  let primaryError: unknown;
+  let hasPrimary = false;
   try {
     const stat = fs.fstatSync(fd);
     if (stat.dev !== observed.dev || stat.ino !== observed.ino) {
@@ -698,21 +796,38 @@ function readPrivateFileAt(directoryFd: number, name: string, maxBytes: number):
     ) {
       throw new Error("profile file changed while it was being read");
     }
-    return out;
-  } finally {
-    fs.closeSync(fd);
+    result = out;
+  } catch (error) {
+    hasPrimary = true;
+    primaryError = error;
   }
+  const cleanupFailures: unknown[] = [];
+  attemptCleanup(cleanupFailures, () => fs.closeSync(fd));
+  if (hasPrimary || cleanupFailures.length > 0) {
+    throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "profile file cleanup failed");
+  }
+  return result!;
 }
 
 export function readPrivateFile(filePath: string, maxBytes: number, heldLock?: ProfileLock): Buffer | null {
   const directory = path.dirname(filePath);
   if (!heldLock) assertSecureProfileDir(directory);
   const handle = directoryHandleFor(directory, heldLock);
+  let result: Buffer | null = null;
+  let primaryError: unknown;
+  let hasPrimary = false;
   try {
-    return readPrivateFileAt(handle.fd, path.basename(filePath), maxBytes);
-  } finally {
-    if (handle.owned) fs.closeSync(handle.fd);
+    result = readPrivateFileAt(handle.fd, path.basename(filePath), maxBytes);
+  } catch (error) {
+    hasPrimary = true;
+    primaryError = error;
   }
+  const cleanupFailures: unknown[] = [];
+  if (handle.owned) attemptCleanup(cleanupFailures, () => fs.closeSync(handle.fd));
+  if (hasPrimary || cleanupFailures.length > 0) {
+    throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "profile directory cleanup failed");
+  }
+  return result;
 }
 
 export function readSession(
@@ -726,8 +841,8 @@ export function readSession(
   let parsed: Partial<Session>;
   try {
     parsed = JSON.parse(bytes.toString("utf8")) as Partial<Session>;
-  } catch {
-    throw new Error("profile session is not valid JSON; log in again");
+  } catch (error) {
+    throw withCause(new Error("profile session is not valid JSON; log in again"), error);
   }
   if (!isValidSession(parsed)) {
     throw new Error("profile session is not a valid OIDC/MAS session; log in again");
@@ -745,8 +860,8 @@ export function readPendingSession(
   let parsed: unknown;
   try {
     parsed = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new Error("pending login state is not valid JSON; inspect it before retrying");
+  } catch (error) {
+    throw withCause(new Error("pending login state is not valid JSON; inspect it before retrying"), error);
   }
   if (!isValidPendingSession(parsed)) {
     throw new Error("pending login state is invalid; inspect it before retrying");
@@ -759,11 +874,19 @@ export function readPendingSession(
 export function assertFreshProfileUnlocked(dir: string = profileDir(), heldLock?: ProfileLock): void {
   if (!heldLock) ensureProfileDir(dir);
   const handle = directoryHandleFor(dir, heldLock);
-  let entries: string[];
+  let entries: string[] = [];
+  let primaryError: unknown;
+  let hasPrimary = false;
   try {
     entries = fs.readdirSync(path.join(PROFILE_PROC_FD_ROOT, String(handle.fd)));
-  } finally {
-    if (handle.owned) fs.closeSync(handle.fd);
+  } catch (error) {
+    hasPrimary = true;
+    primaryError = error;
+  }
+  const cleanupFailures: unknown[] = [];
+  if (handle.owned) attemptCleanup(cleanupFailures, () => fs.closeSync(handle.fd));
+  if (hasPrimary || cleanupFailures.length > 0) {
+    throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "profile directory cleanup failed");
   }
   entries = entries.filter((entry) => entry !== path.basename(profileLockPath(dir)));
   if (entries.length > 0) {
@@ -789,6 +912,8 @@ export function writePrivateFile(
   const temporaryName = `.${name}-${process.pid}-${randomUUID()}.tmp`;
   const temporary = anchoredProfilePath(directoryFd, temporaryName);
   const target = anchoredProfilePath(directoryFd, name);
+  let primaryError: unknown;
+  let hasPrimary = false;
   try {
     try {
       const existing = fs.lstatSync(target);
@@ -800,22 +925,47 @@ export function writePrivateFile(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    let fd: number | undefined = fs.openSync(
+      temporary,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+      0o600,
+    );
+    let fileError: unknown;
+    let fileFailed = false;
+    let fdCloseAttempted = false;
     try {
       fs.writeFileSync(fd, contents);
       fs.fsyncSync(fd);
-    } finally {
+      fdCloseAttempted = true;
       fs.closeSync(fd);
+      fd = undefined;
+    } catch (error) {
+      fileFailed = true;
+      fileError = error;
+    }
+    const fileCleanupFailures: unknown[] = [];
+    if (fd !== undefined && !fdCloseAttempted) attemptCleanup(fileCleanupFailures, () => fs.closeSync(fd!));
+    if (fileFailed || fileCleanupFailures.length > 0) {
+      throwCombinedFailures(fileError, fileFailed, fileCleanupFailures, "profile file cleanup failed");
     }
     fs.renameSync(temporary, target);
     fs.fsyncSync(directoryFd);
+  } catch (error) {
+    hasPrimary = true;
+    primaryError = error;
   } finally {
-    try {
-      fs.rmSync(temporary);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const cleanupFailures: unknown[] = [];
+    attemptCleanup(cleanupFailures, () => {
+      try {
+        fs.rmSync(temporary);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    });
+    if (handle.owned) attemptCleanup(cleanupFailures, () => fs.closeSync(directoryFd));
+    if (hasPrimary || cleanupFailures.length > 0) {
+      throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "profile file cleanup failed");
     }
-    if (handle.owned) fs.closeSync(directoryFd);
   }
 }
 
@@ -824,9 +974,16 @@ export function writeSession(
   dir: string = profileDir(),
 ): void {
   const lock = acquireProfileLock(dir);
+  let operationFailed = false;
+  let operationError: unknown;
   try {
     writeSessionUnlocked(session, dir, lock);
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+    throw error;
   } finally {
+    if (operationFailed) throwWithLockReleaseFailure(lock, operationError);
     lock.release();
   }
 }
@@ -874,9 +1031,16 @@ export function hasLogoutMarker(dir: string = profileDir(), heldLock?: ProfileLo
 /** Clears all local state for this profile (session + crypto store). */
 export function clearProfile(dir: string = profileDir()): void {
   const lock = acquireProfileLock(dir);
+  let operationFailed = false;
+  let operationError: unknown;
   try {
     clearProfileUnlocked(dir, {}, lock);
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+    throw error;
   } finally {
+    if (operationFailed) throwWithLockReleaseFailure(lock, operationError);
     lock.release();
   }
 }
@@ -903,6 +1067,8 @@ export function clearProfileUnlocked(
   const filesToRemove = preserveLogoutMarker
     ? [path.basename(sp), path.basename(pp), path.basename(cp)]
     : [path.basename(sp), path.basename(pp), path.basename(cp), path.basename(marker)];
+  let primaryError: unknown;
+  let hasPrimary = false;
   try {
     // Validate every known state entry before removing any of them. If a
     // known path became unsafe, retain all credentials for an explicit retry.
@@ -953,7 +1119,13 @@ export function clearProfileUnlocked(
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
-  } finally {
-    if (handle.owned) fs.closeSync(directoryFd);
+  } catch (error) {
+    hasPrimary = true;
+    primaryError = error;
+  }
+  const cleanupFailures: unknown[] = [];
+  if (handle.owned) attemptCleanup(cleanupFailures, () => fs.closeSync(directoryFd));
+  if (hasPrimary || cleanupFailures.length > 0) {
+    throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "profile directory cleanup failed");
   }
 }
