@@ -42,8 +42,16 @@ npm run test:unit
 ```
 
 Full Harness acceptance is local-only. Start the shared disposable Synapse/MAS fixture from a
-Storage SDK checkout, then run `npm test` from this checkout. These scenarios connect to
-`http://localhost:8008`; hosted Actions never runs them and they never target a production server.
+Storage SDK checkout, then run `npm test` from this checkout. The full suite includes the real
+fixture-backed CLI functional tests against `http://localhost:8008`; unit-only checks and mocked
+boundaries do not replace that real-stack coverage. The same Podman fixture is shared with the SDK
+and Web e2e suites. Hosted Actions never runs these scenarios and they never target a production
+server.
+
+If setup or tests fail, preserve the shared fixture and its diagnostics; do not tear it down before
+the private Harness investigation is complete. The fixture scripts do not provide that workflow;
+follow the [Harness operator workflow](https://github.com/TeleCrypt-io/Harness/blob/main/docs/release.md#required-stage-first-sequence)
+for the canonical ordering and stopping boundary.
 
 See [CLI.md](./CLI.md) for the full command reference and [RELEASING.md](./RELEASING.md) for the
 guarded GitHub Release procedure.

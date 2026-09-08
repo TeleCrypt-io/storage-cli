@@ -22,6 +22,9 @@ The package bundles its runtime dependencies, including the exact storage-librar
 installer therefore does not need to resolve packages from the NPM registry. The supported runtime
 is Linux with Node.js `>=24.20.0`; release verification uses that exact pinned Node.js version and the bundled npm `11.19.0`.
 
+This document covers CLI publication only. Follow the private [Harness operator workflow](https://github.com/TeleCrypt-io/Harness/blob/main/docs/release.md#required-stage-first-sequence)
+for the canonical development, acceptance, failure-handling, and production boundaries.
+
 ## Release flow
 
 1. Set the exact semver version in `package.json` and commit it.
