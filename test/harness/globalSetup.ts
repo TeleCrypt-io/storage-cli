@@ -16,8 +16,9 @@ async function readText(response: Response, signal: AbortSignal): Promise<string
       chunks.push(next.value);
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Synapse versions response read failed";
     failure = new Error(
-      `Synapse versions response read failed; complete body before failure:\n${Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")}`,
+      `${message}; complete body before failure:\n${Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")}`,
       { cause: error },
     );
   } finally {

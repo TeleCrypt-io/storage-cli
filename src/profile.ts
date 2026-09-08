@@ -591,7 +591,7 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
             released = true;
           } catch (error) {
             if (directoryCloseFailed) {
-              throw new Error("profile lock directory cleanup failed", { cause: error });
+              throw new Error("profile lock cleanup failed; inspect the profile directory and retry", { cause: error });
             }
             // Keep the quarantine path for a same-process retry and surface
             // the failure instead of silently leaving an orphaned profile

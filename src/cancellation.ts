@@ -64,6 +64,7 @@ export function runWithAbortRace<T>(
     if (signal.aborted) throw abortError;
     return operation();
   });
+  request.catch(() => undefined);
   signal.addEventListener("abort", onAbort, { once: true });
   return Promise.race([request, aborted]).finally(() => {
     signal.removeEventListener("abort", onAbort);
@@ -90,11 +91,13 @@ export async function readReadableStreamChunkWithAbort<T>(
   signal: AbortSignal,
   abortError: Error,
 ): Promise<ReadableStreamReadResult<T>> {
+  const cancellationFailureMessage = (error: unknown): string =>
+    `${error instanceof Error ? error.message : "response read failed"}; response read cancellation failed`;
   if (signal.aborted) {
     try {
       await cancelReadableStreamReaderWithinBound(reader);
     } catch (cleanupError) {
-      throwCombinedFailures(abortError, true, [cleanupError], "response read cancellation failed");
+      throwCombinedFailures(abortError, true, [cleanupError], cancellationFailureMessage(abortError));
     }
     throw abortError;
   }
@@ -112,13 +115,14 @@ export async function readReadableStreamChunkWithAbort<T>(
     if (signal.aborted) throw abortError;
     return reader.read();
   });
+  read.catch(() => undefined);
   try {
     return await Promise.race([read, aborted]);
   } catch (error) {
     try {
       await cancelReadableStreamReaderWithinBound(reader);
     } catch (cleanupError) {
-      throwCombinedFailures(error, true, [cleanupError], "response read cancellation failed");
+      throwCombinedFailures(error, true, [cleanupError], cancellationFailureMessage(error));
     }
     throw error;
   } finally {

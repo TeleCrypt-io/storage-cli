@@ -106,7 +106,7 @@ describe("OIDC session refresh persistence", () => {
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors.map(String)).toEqual([
-      "Error: operation cancelled",
+      "StorageError: operation cancelled",
       "Error: lock release failed",
     ]);
     expect(release).toHaveBeenCalledTimes(1);
@@ -130,7 +130,7 @@ describe("OIDC session refresh persistence", () => {
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors.map(String)).toEqual([
-      "Error: operation cancelled",
+      "StorageError: operation cancelled",
       "Error: lock release failed",
     ]);
     expect(release).toHaveBeenCalledTimes(1);

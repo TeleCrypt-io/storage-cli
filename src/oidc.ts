@@ -23,6 +23,7 @@ import {
   type Session,
 } from "./profile.js";
 import { withCause } from "./failure.js";
+import { settlePromiseWithin } from "./cancellation.js";
 import { expectedMatrixServerName, isExactLoopbackHost } from "./topology.js";
 
 /** Carries the exact bearer credentials that must be revoked when a device
@@ -175,12 +176,14 @@ function safeDeviceAccessError(error: unknown): string {
 
 /** Adds a real abort boundary around SDK OIDC calls. The SDK OIDC operations
  * receive this signal directly; cooperative calls abort their HTTP request and
- * polling delay. A deadline failure is the complete public result. */
+ * polling delay. Approval joins a late token result so its credentials remain
+ * available for mandatory revocation. */
 async function withDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   label: string,
   timeoutMs: number,
   externalSignal?: AbortSignal,
+  cancelledSuccess?: (value: T, boundaryError: StorageError) => Error,
 ): Promise<T> {
   if (externalSignal?.aborted) throw new StorageError("OIDC operation cancelled");
   const controller = new AbortController();
@@ -194,6 +197,7 @@ async function withDeadline<T>(
     }
     return operation(controller.signal);
   });
+  operationPromise.catch(() => undefined);
   const cancellation = new Promise<never>((_, reject) => {
     const handler = () => {
       boundaryError = new StorageError("OIDC operation cancelled");
@@ -221,6 +225,10 @@ async function withDeadline<T>(
       const finalBoundary = externalSignal?.aborted
         ? new StorageError("OIDC operation cancelled")
         : boundaryError ?? timeoutError;
+      const settlement = await settlePromiseWithin(operationPromise);
+      if (settlement.status === "fulfilled" && cancelledSuccess) {
+        throw cancelledSuccess(settlement.value, finalBoundary);
+      }
       throw finalBoundary;
     }
     throw error;
@@ -501,6 +509,33 @@ export async function runDeviceCodeLogin(
     "OIDC approval",
     OIDC_APPROVAL_TIMEOUT_MS,
     signal,
+    (lateResult, boundaryError) => {
+      if (isDeviceAccessTokenError(lateResult)) return boundaryError;
+      let lateAccessToken: string;
+      try {
+        lateAccessToken = requireOpaqueValue(lateResult.access_token, "OIDC access token");
+      } catch {
+        return boundaryError;
+      }
+      const pending: PendingSession = {
+        homeserver: trustedHomeserver,
+        deviceId,
+        accessToken: lateAccessToken,
+        oidcIssuer,
+        oidcClientId: clientId,
+        oidcTokenEndpoint,
+        oidcRevocationEndpoint,
+        matrixServerName: trustedMatrixServerName,
+      };
+      if (lateResult.refresh_token) {
+        try {
+          pending.refreshToken = requireOpaqueValue(lateResult.refresh_token, "OIDC refresh token");
+        } catch {
+          // The access token remains revocable even when the refresh field is malformed.
+        }
+      }
+      return new OidcLoginError(boundaryError.message, pending);
+    },
   );
   if (isDeviceAccessTokenError(result)) {
     throw new StorageError(safeDeviceAccessError(result.error));

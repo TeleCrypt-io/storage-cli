@@ -38,6 +38,7 @@ describe("functional fixture setup response handling", () => {
       const pending = setup();
       const failure = expect(pending).rejects.toThrow("Synapse versions response read cancelled");
       await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(5_000);
       await failure;
       expect(cancelCalled).toBe(true);
 

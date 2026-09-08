@@ -34,9 +34,11 @@ export async function loginAndInitialize(
   let opened: Awaited<ReturnType<typeof initStorageForNewSession>> | undefined;
   let operationFailed = false;
   let operationError: unknown;
+  let profilePreflightComplete = false;
   try {
     try {
       assertFreshProfileUnlocked(dir, lock);
+      profilePreflightComplete = true;
       session = await runDeviceCodeLogin(homeserver, hooks, signal);
       writeSessionUnlocked(session, dir, lock);
       sessionPersisted = true;
@@ -44,6 +46,7 @@ export async function loginAndInitialize(
       await opened.close();
       return session;
     } catch (error) {
+      if (!profilePreflightComplete) throw error;
       const recoveryFailures: unknown[] = [error];
       // If the initialization path reached `opened.close()`, its failure is
       // itself part of the primary transaction result. Keep it when the

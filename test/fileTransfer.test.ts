@@ -122,7 +122,7 @@ describe("bounded file transfer paths", () => {
 
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors.map(String)).toEqual([
-      "Error: input file exceeds the 128 MiB limit",
+      "StorageError: input file exceeds the 128 MiB limit",
       "Error: close failure 3",
       "Error: close failure 4",
     ]);

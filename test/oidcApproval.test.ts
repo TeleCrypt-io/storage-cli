@@ -114,6 +114,7 @@ describe("local MAS device approval", () => {
       const approval = approveDeviceCodeViaHttp("alice", "test-only-password", "ABC-123");
       const failure = expect(approval).rejects.toThrow(/approval cancelled/);
       await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(5_000);
       await failure;
       expect(cancelCalled).toBe(true);
 

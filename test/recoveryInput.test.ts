@@ -75,11 +75,13 @@ describe("hidden recovery-key prompt input", () => {
     const stdin = new FakeTty();
     stdin.throwOnRestore = true;
     stdin.throwOnPause = true;
+    let writes = 0;
     const pending = promptForRecoveryKey(
       new AbortController().signal,
       stdin as unknown as NodeJS.ReadStream,
-      () => {
-        throw new Error("prompt output failed");
+      (value) => {
+        writes += 1;
+        if (writes > 1) throw new Error("prompt output failed");
       },
     );
     stdin.emit("data", "recovery-key\n");

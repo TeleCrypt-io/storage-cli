@@ -15,7 +15,6 @@ import {
 import type { ProfileLock } from "./profile.js";
 import { assertOidcEndpoint, assertTrustedHomeserver } from "./oidc.js";
 import {
-  cancelReadableStreamReaderWithinBound,
   commandSignal,
   readReadableStreamChunkWithAbort,
   settlePromiseWithin,

@@ -32,6 +32,7 @@ async function fetchWithinApprovalBound(
     if (signal.aborted) throw cancellationError();
     return fetch(input, init);
   });
+  request.catch(() => undefined);
   try {
     return await Promise.race([request, aborted]);
   } finally {
@@ -154,8 +155,9 @@ async function readHtml(response: Response, signal: AbortSignal, redactions: str
     }
   } catch (error) {
     const partial = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+    const message = error instanceof Error ? error.message : "MAS response read failed";
     failure = new Error(
-      `MAS response read failed; body received before failure:\n${htmlDiagnostic(partial, redactions)}`,
+      `${message}; body received before failure:\n${htmlDiagnostic(partial, redactions)}`,
       { cause: error },
     );
   } finally {

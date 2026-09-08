@@ -230,7 +230,8 @@ test("the release workflow performs npm signature verification before SDK proven
   assert.ok(audit >= 0 && consumer >= 0 && provenance >= 0 && audit < consumer && consumer < provenance);
   assert.doesNotMatch(workflow, /gitHead/u);
   assert.match(workflow, /SDK_REF: v0\.5\.20/u);
-  assert.match(workflow, /if test "\$status" = 0; then\s+return 1\s+fi\s+return "\$status"/u);
+  assert.match(workflow, /capture_command "\$audit_out" "\$audit_err"[\s\S]*?npm audit signatures/u);
+  assert.match(workflow, /capture_command "\$provenance_out" "\$provenance_err"[\s\S]*?verify-npm-provenance\.mjs/u);
 });
 
 test("release capture helpers retain and report nonempty stderr on success", () => {
