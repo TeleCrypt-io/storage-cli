@@ -2,7 +2,7 @@ import fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { StorageError } from "@telecrypt-io/storage/core";
-import { attemptCleanup, throwCombinedFailures } from "./failure.js";
+import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
 import { MAX_MEDIA_FILE_BYTES } from "./limits.js";
 
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
@@ -44,7 +44,7 @@ function openSecureDirectory(directory: string): number {
       fdCloseAttempted = false;
     }
   } catch (error) {
-    primaryError = error instanceof StorageError ? error : securePathError();
+    primaryError = error instanceof StorageError ? error : withCause(securePathError(), error);
     hasPrimary = true;
   }
   if (!hasPrimary && fd !== undefined) return fd;
@@ -114,7 +114,9 @@ export function readBoundedInput(filePath: string): Buffer {
     result = data;
   } catch (error) {
     hasPrimary = true;
-    primaryError = error instanceof StorageError ? error : new StorageError("input file could not be opened");
+    primaryError = error instanceof StorageError
+      ? error
+      : withCause(new StorageError("input file could not be opened"), error);
   }
   const cleanupFailures: unknown[] = [];
   if (fd !== undefined) attemptCleanup(cleanupFailures, () => fs.closeSync(fd!));

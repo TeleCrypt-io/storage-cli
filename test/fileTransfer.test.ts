@@ -107,18 +107,71 @@ describe("bounded file transfer paths", () => {
     expect(closeSync).toHaveBeenCalledWith(parentFd);
   });
 
+  it("retains a secure-directory open failure as its private cause", () => {
+    const dir = directory();
+    const openFailure = new Error("simulated directory open failure");
+    const originalOpenSync = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementation(((file, flags, mode) => {
+      if (typeof file === "string" && file.startsWith("/proc/self/fd/")) throw openFailure;
+      return originalOpenSync(file, flags, mode);
+    }) as typeof fs.openSync);
+
+    let failure: unknown;
+    try {
+      readBoundedInput(path.join(dir, "source.txt"));
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      name: "StorageError",
+      message: "safe file operations require Linux /proc/self/fd support",
+    });
+    expect((failure as Error).cause).toBe(openFailure);
+  });
+
+  it("retains a target-file open failure as its private cause", () => {
+    const dir = directory();
+    const openFailure = new Error("simulated target-file open failure");
+    const originalOpenSync = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementation(((file, flags, mode) => {
+      if (typeof file === "string" && path.basename(file) === "source.txt") throw openFailure;
+      return originalOpenSync(file, flags, mode);
+    }) as typeof fs.openSync);
+
+    let failure: unknown;
+    try {
+      readBoundedInput(path.join(dir, "source.txt"));
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toMatchObject({
+      name: "StorageError",
+      message: "input file could not be opened",
+    });
+    expect((failure as Error).cause).toBe(openFailure);
+  });
+
   it("preserves the read failure and every descriptor cleanup failure", () => {
     const dir = directory();
     const source = path.join(dir, "oversized.bin");
     fs.writeFileSync(source, Buffer.alloc(0));
     fs.truncateSync(source, MAX_MEDIA_FILE_BYTES + 1);
     const originalCloseSync = fs.closeSync;
-    let closeCalls = 0;
+    const originalFstatSync = fs.fstatSync;
+    let operationReady = false;
+    let cleanupFailures = 0;
+    vi.spyOn(fs, "fstatSync").mockImplementation((fd) => {
+      operationReady = true;
+      return originalFstatSync(fd);
+    });
     vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
-      closeCalls += 1;
-      if (closeCalls === 3 || closeCalls === 4) {
+      if (operationReady && cleanupFailures < 2) {
+        const label = cleanupFailures === 0 ? "file descriptor" : "parent descriptor";
+        cleanupFailures += 1;
         originalCloseSync(fd);
-        throw new Error(`close failure ${closeCalls}`);
+        throw new Error(`${label} close failure`);
       }
       return originalCloseSync(fd);
     });
@@ -133,8 +186,8 @@ describe("bounded file transfer paths", () => {
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors.map(String)).toEqual([
       "StorageError: input file exceeds the 128 MiB limit",
-      "Error: close failure 3",
-      "Error: close failure 4",
+      "Error: file descriptor close failure",
+      "Error: parent descriptor close failure",
     ]);
   });
 
@@ -171,16 +224,19 @@ describe("bounded file transfer paths", () => {
     const dir = directory();
     const destination = path.join(dir, "download.bin");
     const originalCloseSync = fs.closeSync;
-    let closeCalls = 0;
+    let operationFailed = false;
+    let cleanupFailures = 0;
     vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
-      closeCalls += 1;
-      if (closeCalls === 3 || closeCalls === 4) {
+      if (operationFailed && cleanupFailures < 2) {
+        const label = cleanupFailures === 0 ? "file descriptor" : "parent descriptor";
+        cleanupFailures += 1;
         originalCloseSync(fd);
-        throw new Error(`close failure ${closeCalls}`);
+        throw new Error(`${label} close failure`);
       }
       return originalCloseSync(fd);
     });
     vi.spyOn(fs, "writeFileSync").mockImplementation(() => {
+      operationFailed = true;
       throw new Error("write failure");
     });
     const originalRmSync = fs.rmSync;
@@ -202,9 +258,9 @@ describe("bounded file transfer paths", () => {
     expect(failure).toBeInstanceOf(AggregateError);
     expect((failure as AggregateError).errors.map(String)).toEqual([
       "Error: write failure",
-      "Error: close failure 3",
+      "Error: file descriptor close failure",
       "Error: temporary cleanup failure",
-      "Error: close failure 4",
+      "Error: parent descriptor close failure",
     ]);
   });
 
