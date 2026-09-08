@@ -46,7 +46,9 @@ function makeSdkArchive(packageJson) {
   const archivePath = path.join(directory, "storage-sdk.tgz");
   fs.mkdirSync(packageDirectory);
   fs.writeFileSync(path.join(packageDirectory, "package.json"), JSON.stringify(packageJson));
-  execFileSync("tar", ["-czf", archivePath, "-C", directory, "package"]);
+  execFileSync("tar", ["-czf", archivePath, "-C", directory, "package"], {
+    maxBuffer: Number.POSITIVE_INFINITY,
+  });
   const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(archivePath)).digest("base64")}`;
   return { directory, archivePath, integrity };
 }
@@ -117,7 +119,9 @@ test("the SDK consumer contract accepts a normal npm v3 lock entry without name 
       path.join(packageDirectory, "package.json"),
       JSON.stringify({ name: "@telecrypt-io/storage", version: "0.5.20" }),
     );
-    execFileSync("tar", ["-czf", archivePath, "-C", directory, "package"]);
+    execFileSync("tar", ["-czf", archivePath, "-C", directory, "package"], {
+      maxBuffer: Number.POSITIVE_INFINITY,
+    });
     const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(archivePath)).digest("base64")}`;
     const lock = {
       packages: {
@@ -214,7 +218,7 @@ test("the SDK CLI verifier bounds its lockfile input", () => {
         "/unavailable/sdk.tgz",
         lockPath,
         "0.5.20",
-      ], { encoding: "utf8", stdio: "pipe" }),
+      ], { encoding: "utf8", maxBuffer: Number.POSITIVE_INFINITY, stdio: "pipe" }),
       /bounded JSON input/u,
     );
   } finally {

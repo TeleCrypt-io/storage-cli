@@ -147,7 +147,9 @@ describe("release source and archive invariants", () => {
     const archivePath = path.join(dir, "release.tgz");
     const member = "package/dist/index.js";
     fs.writeFileSync(path.join(dir, member), "export const production = true;\n");
-    execFileSync("tar", ["-czf", archivePath, "-C", dir, "package"]);
+    execFileSync("tar", ["-czf", archivePath, "-C", dir, "package"], {
+      maxBuffer: Number.POSITIVE_INFINITY,
+    });
     expect(validateArchiveSourceContent(archivePath, [member])).toBe(true);
 
     for (const marker of [
@@ -159,7 +161,9 @@ describe("release source and archive invariants", () => {
       "TELECRYPT_IO_STORAGE_DEBUG",
     ]) {
       fs.writeFileSync(path.join(dir, member), `${marker}\n`);
-      execFileSync("tar", ["-czf", archivePath, "-C", dir, "package"]);
+      execFileSync("tar", ["-czf", archivePath, "-C", dir, "package"], {
+        maxBuffer: Number.POSITIVE_INFINITY,
+      });
       expect(() => validateArchiveSourceContent(archivePath, [member])).toThrow(/forbidden test marker/u);
     }
   });
