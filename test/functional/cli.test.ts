@@ -1,9 +1,16 @@
-import { afterAll, describe, it, expect } from "vitest";
+import { afterAll, afterEach, describe, it, expect } from "vitest";
 import { createServer } from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { cleanupFreshProfiles, cliJson, freshProfileDir, markProfileForRemoteCleanup, runCli } from "../harness/cli";
+import {
+  cleanupFreshProfiles,
+  cliJson,
+  freshProfileDir,
+  freshProfilePaths,
+  markProfileForRemoteCleanup,
+  runCli,
+} from "../harness/cli";
 import { approveDeviceCodeViaHttp } from "../harness/oidcApproval";
 import { registerUserInMas } from "../harness/users";
 import { waitFor } from "../harness/waitFor";
@@ -12,6 +19,7 @@ import { acquireProfileLock, sessionPath, writeSession } from "../../src/profile
 
 const HOMESERVER = "http://localhost:8008";
 const testArtifactDirs = new Set<string>();
+let testFailureObserved = false;
 
 function artifactPath(name: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-cli-artifact-"));
@@ -20,12 +28,30 @@ function artifactPath(name: string): string {
   return path.join(dir, name);
 }
 
+afterEach(({ task }) => {
+  // A failed scenario may have created remote MAS state and local media before
+  // its assertion or subprocess failed. Leave both available for diagnosis.
+  if (task.result?.state === "fail") testFailureObserved = true;
+});
+
 afterAll(async () => {
-  try {
-    await cleanupFreshProfiles();
-  } finally {
-    for (const dir of testArtifactDirs) fs.rmSync(dir, { recursive: true, force: true });
+  if (testFailureObserved) {
+    const profiles = freshProfilePaths();
+    const artifacts = [...testArtifactDirs];
+    process.stderr.write(
+      [
+        "CLI functional test failed; retaining profiles and artifacts for investigation.",
+        "Profile directories:",
+        ...(profiles.length > 0 ? profiles : ["(none)"]),
+        "Artifact directories:",
+        ...(artifacts.length > 0 ? artifacts : ["(none)"]),
+      ].join("\n") + "\n",
+    );
+    return;
   }
+
+  await cleanupFreshProfiles();
+  for (const dir of testArtifactDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 function randomUser(prefix: string): string {
@@ -40,7 +66,7 @@ interface LocalMasUser {
 
 /** Drives the product CLI's actual device-code flow. The test password is
  * used only by the local MAS browser-form approval helper. */
-async function loginProfileOnce(
+async function loginProfile(
   dir: string,
   user: LocalMasUser,
 ): Promise<{ userId: string; username: string; password: string }> {
@@ -81,37 +107,6 @@ async function loginProfileOnce(
   return { userId: json.userId, ...user };
 }
 
-/** `mas-cli manage register-user` returns before its asynchronous Matrix
- * provisioning job always settles. Retrying the full OIDC flow observes that
- * real boundary without bypassing the OIDC flow through a direct password API. */
-async function loginProfile(
-  dir: string,
-  user: LocalMasUser,
-): Promise<{ userId: string; username: string; password: string }> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      return await loginProfileOnce(dir, user);
-    } catch (err) {
-      lastError = err;
-      if (attempt < 3) {
-        // A device grant can leave login-pending.json when initialization
-        // fails after remote authorization. Revoke and clear that exact
-        // profile before retrying; otherwise the CLI's fresh-profile fence
-        // correctly refuses every subsequent attempt.
-        const cleanup = await runCli(
-          ["storage", "logout", "--json"],
-          { TELECRYPT_IO_STORAGE_HOME: dir },
-          { timeoutMs: 20_000 },
-        );
-        if (cleanup.code !== 0) throw lastError;
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-    }
-  }
-  throw lastError;
-}
-
 async function registerProfile(
   dir: string,
   prefix: string,
@@ -121,7 +116,7 @@ async function registerProfile(
   await registerUserInMas(username, password);
   // Mark the profile before authorization begins: a device grant can issue a
   // bearer session before local persistence completes, leaving only the
-  // retryable pending file for teardown to revoke.
+  // pending file for post-investigation cleanup to revoke.
   markProfileForRemoteCleanup(dir);
   const profile = await loginProfile(dir, { username, password });
   return profile;

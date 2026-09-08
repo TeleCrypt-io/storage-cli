@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
 import { setup } from "./harness/globalSetup.js";
 
 afterEach(() => {
@@ -47,5 +48,22 @@ describe("functional fixture setup response handling", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("CLI functional fixture cleanup source", () => {
+  it("stops at the first profile cleanup failure with complete diagnostics", () => {
+    const source = fs.readFileSync(new URL("./harness/cli.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("for (const dir of freshProfiles)");
+    expect(source).toContain("post-investigation cleanup");
+    expect(source).not.toContain("const failures: string[]");
+    expect(source).not.toContain("const cleaned = new Set<string>");
+    expect(source).toMatch(
+      /if \(result\.code !== 0\) \{\s*throw new Error\([\s\S]*stdout:\\n\$\{result\.stdout\}[\s\S]*stderr:\\n\$\{result\.stderr\}/u,
+    );
+    expect(source).toMatch(
+      /fs\.rmSync\(dir,[\s\S]*freshProfiles\.delete\(dir\);[\s\S]*remotelyOwnedProfiles\.delete\(dir\);/u,
+    );
   });
 });

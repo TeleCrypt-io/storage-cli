@@ -171,49 +171,53 @@ export function freshProfileDir(prefix: string): string {
   return dir;
 }
 
+/** Returns every profile created by this test worker, including profiles from
+ * scenarios that failed before remote cleanup could be attempted. */
+export function freshProfilePaths(): string[] {
+  return [...freshProfiles];
+}
+
 /** Records a profile whose successful OIDC login created remote state. */
 export function markProfileForRemoteCleanup(dir: string): void {
   remotelyOwnedProfiles.add(dir);
 }
 
-/** Removes every profile created by this test worker, including profiles from
- * tests that failed partway through setup. */
+/** Removes profiles after a successful functional run or explicit
+ * post-investigation cleanup. A cleanup failure stops here so the current and
+ * remaining profiles stay available for investigation. */
 export async function cleanupFreshProfiles(): Promise<void> {
-  const failures: string[] = [];
-  const cleaned = new Set<string>();
   for (const dir of freshProfiles) {
-    let remoteCleanupSucceeded = true;
     const hasRemoteSession =
       fs.existsSync(path.join(dir, "session.json")) || fs.existsSync(path.join(dir, "login-pending.json"));
     if (remotelyOwnedProfiles.has(dir) && hasRemoteSession) {
+      let result: CliResult;
       try {
-        const result = await runCli(["storage", "logout", "--json"], {
+        result = await runCli(["storage", "logout", "--json"], {
           TELECRYPT_IO_STORAGE_HOME: dir,
         }, { timeoutMs: 20_000 });
-        if (result.code !== 0) {
-          remoteCleanupSucceeded = false;
-          failures.push(`${dir}: remote logout exited ${result.code}\n${result.stdout}\n${result.stderr}`);
-        }
       } catch (error) {
-        remoteCleanupSucceeded = false;
-        failures.push(`${dir}: remote logout failed: ${safeErrorMessage(error)}`);
+        throw new Error(
+          `${dir}: remote logout failed: ${safeErrorMessage(error)}`,
+          { cause: error },
+        );
+      }
+      if (result.code !== 0) {
+        throw new Error(
+          `${dir}: remote logout exited ${result.code}\n` +
+            `stdout:\n${result.stdout}\n` +
+            `stderr:\n${result.stderr}`,
+        );
       }
     }
-    // Preserve bearer state when revocation was not confirmed so teardown can
-    // be retried instead of silently orphaning remote state.
-    if (!remoteCleanupSucceeded) continue;
     try {
       fs.rmSync(dir, { recursive: true, force: true });
-      cleaned.add(dir);
     } catch (error) {
-      failures.push(`${dir}: local profile removal failed: ${safeErrorMessage(error)}`);
+      throw new Error(
+        `${dir}: local profile removal failed: ${safeErrorMessage(error)}`,
+        { cause: error },
+      );
     }
-  }
-  for (const dir of cleaned) {
     freshProfiles.delete(dir);
     remotelyOwnedProfiles.delete(dir);
-  }
-  if (failures.length > 0) {
-    throw new Error(`failed to remove ${failures.length} temporary CLI profile(s)`);
   }
 }
