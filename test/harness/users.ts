@@ -10,9 +10,10 @@ const execFileAsync = promisify(execFile);
  * code never receives it and the harness never calls Matrix password login.
  */
 export async function registerUserInMas(username: string, password: string): Promise<void> {
+  const email = `${username}@example.com`;
   const diagnostic = (value: unknown): string => {
     let text = safeErrorMessage(value);
-    for (const secret of [password, username]) {
+    for (const secret of [password, email, username]) {
       if (secret) text = text.split(secret).join("<redacted>");
     }
     return text;
@@ -26,6 +27,8 @@ export async function registerUserInMas(username: string, password: string): Pro
     username,
     "--password",
     password,
+    "--email",
+    email,
     "--yes",
     "--ignore-password-complexity",
     "-c",
