@@ -29,7 +29,7 @@
     "build": "tsc",
     "lint": "eslint src test --ext .ts",
     "verify:dependencies": "node scripts/verify-consumer-dependencies.mjs",
-    "test": "vitest run",
+    "test": "node --test test/releasePolicy.test.mjs && vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:watch": "vitest"
   },

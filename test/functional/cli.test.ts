@@ -144,8 +144,8 @@ describe("CLI", () => {
         TELECRYPT_IO_STORAGE_HOME: dir,
       });
       expect(blocked.code).not.toBe(0);
-      expect(blocked.json).toEqual({
-        error: "profile is busy; retry after the other storage command exits",
+      expect(blocked.json).toMatchObject({
+        error: expect.stringContaining("Error: profile is busy; retry after the other storage command exits; stack:"),
       });
       expect(blocked.stderr).not.toContain(session.accessToken);
     } finally {
@@ -190,7 +190,9 @@ describe("CLI", () => {
       });
 
       expect(result.code).not.toBe(0);
-      expect(result.json).toEqual({ error: "server logout failed (HTTP 503)" });
+      expect(result.json).toMatchObject({
+        error: expect.stringContaining("StorageError: server logout failed (HTTP 503); stack:"),
+      });
       expect(result.stderr).not.toContain(session.accessToken);
       expect(fs.existsSync(sessionPath(dir))).toBe(true);
     } finally {

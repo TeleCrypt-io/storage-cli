@@ -7,6 +7,6 @@ export default defineConfig({
     retry: 0,
     testTimeout: 30000,
     hookTimeout: 30000,
-    exclude: ["**/node_modules/**"],
+    exclude: ["**/node_modules/**", "test/releasePolicy.test.mjs"],
   },
 });
