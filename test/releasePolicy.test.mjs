@@ -221,7 +221,7 @@ test("the release workflow performs npm signature verification before SDK proven
   const provenance = workflow.indexOf("storage-sdk/scripts/verify-npm-provenance.mjs");
   assert.ok(audit >= 0 && consumer >= 0 && provenance >= 0 && audit < consumer && consumer < provenance);
   assert.doesNotMatch(workflow, /gitHead/u);
-  assert.match(workflow, /SDK_REF: v0\.5\.20/u);
+  assert.match(workflow, /SDK_REF: v0\.5\.29/u);
   assert.match(workflow, /capture_command "\$audit_out" "\$audit_err"[\s\S]*?npm audit signatures/u);
   assert.match(workflow, /capture_command "\$provenance_out" "\$provenance_err"[\s\S]*?verify-npm-provenance\.mjs/u);
 });
