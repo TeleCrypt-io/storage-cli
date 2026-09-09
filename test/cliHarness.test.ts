@@ -235,7 +235,7 @@ describe("CLI subprocess output capture", () => {
     const root = artifactRoot();
     let failure: unknown;
     try {
-      await runCli({} as unknown as string[], {});
+      await runCli(1 as unknown as string[], {});
     } catch (error) {
       failure = error;
     }
