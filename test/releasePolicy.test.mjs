@@ -23,7 +23,7 @@ const archive = `${tag}.tgz`;
 const digest = `sha256:${"a".repeat(64)}`;
 const commit = "b".repeat(40);
 const sourceIdentity = `tag_ref=refs/tags/${tag}\ntag_object=${"c".repeat(40)}\ntag_commit=${commit}\nremote_main=${commit}\narchive_sha256=${"f".repeat(64)}\n`;
-const sdkIdentity = `tag_ref=refs/tags/v0.5.20\ntag_object=${"d".repeat(40)}\ntag_commit=${"e".repeat(40)}\nversion=0.5.20\n`;
+const sdkIdentity = `tag_ref=refs/tags/v0.5.29\ntag_object=${"d".repeat(40)}\ntag_commit=${"e".repeat(40)}\nversion=0.5.29\n`;
 
 function release(overrides = {}) {
   return {
@@ -57,8 +57,8 @@ function sdkLock(integrity, overrides = {}) {
   return {
     packages: {
       "node_modules/@telecrypt-io/storage": {
-        version: "0.5.20",
-        resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.20.tgz",
+        version: "0.5.29",
+        resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.29.tgz",
         integrity,
         ...overrides,
       },
@@ -74,12 +74,12 @@ test("source and SDK identity files are exact and bounded", () => {
     remote_main: commit,
     archive_sha256: "f".repeat(64),
   }).tag_commit, commit);
-  assert.equal(validateSdkIdentity(sdkIdentity, { tagRef: "refs/tags/v0.5.20", version: "0.5.20" }).version, "0.5.20");
+  assert.equal(validateSdkIdentity(sdkIdentity, { tagRef: "refs/tags/v0.5.29", version: "0.5.29" }).version, "0.5.29");
   assert.throws(() => validateSourceIdentity(`${sourceIdentity}extra=x\n`, {}), /framing|keys/u);
   assert.throws(() => validateSourceIdentity(sourceIdentity.replace(/archive_sha256=f+/u, "archive_sha256=bad"), {}), /hash/u);
-  assert.throws(() => validateSdkIdentity(sdkIdentity.replace(/version=0.5.20/u, "version=0.5.21"), {
-    tagRef: "refs/tags/v0.5.20",
-    version: "0.5.20",
+  assert.throws(() => validateSdkIdentity(sdkIdentity.replace(/version=0.5.29/u, "version=0.5.30"), {
+    tagRef: "refs/tags/v0.5.29",
+    version: "0.5.29",
   }), /fixture/u);
   assert.throws(
     () => validateSourceIdentity(sourceIdentity.replace(new RegExp(`${commit}(?=\\nremote_main)`), "0".repeat(40)), {}),
@@ -87,8 +87,8 @@ test("source and SDK identity files are exact and bounded", () => {
   );
   assert.throws(
     () => validateSdkIdentity(sdkIdentity.replace(/e{40}(?=\nversion)/u, "0".repeat(40)), {
-      tagRef: "refs/tags/v0.5.20",
-      version: "0.5.20",
+      tagRef: "refs/tags/v0.5.29",
+      version: "0.5.29",
     }),
     /commit/u,
   );
@@ -100,23 +100,23 @@ test("the SDK consumer contract requires exact registry bytes", () => {
     packages: {
       "node_modules/@telecrypt-io/storage": {
         name: "@telecrypt-io/storage",
-        version: "0.5.20",
-        resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.20.tgz",
+        version: "0.5.29",
+        resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.29.tgz",
         integrity: "",
       },
     },
   };
-  assert.throws(() => verifySdkPackageBinding("/unavailable/sdk.tgz", lock, "0.5.20"), /integrity/u);
+  assert.throws(() => verifySdkPackageBinding("/unavailable/sdk.tgz", lock, "0.5.29"), /integrity/u);
 });
 
 test("the SDK consumer contract accepts a normal npm v3 lock entry without name or gitHead", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "storage-sdk-binding-test-"));
   const packageDirectory = path.join(directory, "package");
-  const archivePath = path.join(directory, "storage-0.5.20.tgz");
+  const archivePath = path.join(directory, "storage-0.5.29.tgz");
   fs.mkdirSync(packageDirectory);
   fs.writeFileSync(
     path.join(packageDirectory, "package.json"),
-    JSON.stringify({ name: "@telecrypt-io/storage", version: "0.5.20" }),
+    JSON.stringify({ name: "@telecrypt-io/storage", version: "0.5.29" }),
   );
   execFileSync("tar", ["-czf", archivePath, "-C", directory, "package"], {
     maxBuffer: Number.POSITIVE_INFINITY,
@@ -125,15 +125,15 @@ test("the SDK consumer contract accepts a normal npm v3 lock entry without name 
   const lock = {
     packages: {
       "node_modules/@telecrypt-io/storage": {
-        version: "0.5.20",
-        resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.20.tgz",
+        version: "0.5.29",
+        resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.29.tgz",
         integrity,
         inBundle: true,
         license: "BUSL-1.1",
       },
     },
   };
-  assert.equal(verifySdkPackageBinding(archivePath, lock, "0.5.20"), true);
+  assert.equal(verifySdkPackageBinding(archivePath, lock, "0.5.29"), true);
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -143,7 +143,7 @@ test("the SDK consumer contract preserves package extraction failures", () => {
   fs.writeFileSync(archivePath, "not a tar archive");
   const integrity = `sha512-${createHash("sha512").update(fs.readFileSync(archivePath)).digest("base64")}`;
   assert.throws(
-    () => verifySdkPackageBinding(archivePath, sdkLock(integrity), "0.5.20"),
+    () => verifySdkPackageBinding(archivePath, sdkLock(integrity), "0.5.29"),
     (error) => {
       assert.match(error.message, /package metadata is invalid or unavailable/u);
       assert.ok(error.cause instanceof Error);
@@ -154,11 +154,11 @@ test("the SDK consumer contract preserves package extraction failures", () => {
 });
 
 test("the SDK consumer contract rejects malformed package, lock, bytes, and version identities", () => {
-  const validMetadata = { name: "@telecrypt-io/storage", version: "0.5.20" };
+  const validMetadata = { name: "@telecrypt-io/storage", version: "0.5.29" };
   const fixtures = [];
   const valid = makeSdkArchive(validMetadata);
   fixtures.push(valid);
-  assert.equal(verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity), "0.5.20"), true);
+  assert.equal(verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity), "0.5.29"), true);
 
   for (const packageJson of [
     { ...validMetadata, name: "@telecrypt-io/not-storage" },
@@ -167,20 +167,20 @@ test("the SDK consumer contract rejects malformed package, lock, bytes, and vers
     const malformed = makeSdkArchive(packageJson);
     fixtures.push(malformed);
     assert.throws(
-      () => verifySdkPackageBinding(malformed.archivePath, sdkLock(malformed.integrity), "0.5.20"),
+      () => verifySdkPackageBinding(malformed.archivePath, sdkLock(malformed.integrity), "0.5.29"),
       /identity/u,
     );
   }
 
   assert.throws(
-    () => verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity, { name: "@telecrypt-io/not-storage" }), "0.5.20"),
+    () => verifySdkPackageBinding(valid.archivePath, sdkLock(valid.integrity, { name: "@telecrypt-io/not-storage" }), "0.5.29"),
     /lockfile/u,
   );
   assert.throws(
     () => verifySdkPackageBinding(
       valid.archivePath,
       sdkLock(valid.integrity, { resolved: "https://registry.npmjs.org/@telecrypt-io/storage/-/storage-0.5.21.tgz" }),
-      "0.5.20",
+      "0.5.29",
     ),
     /provenance/u,
   );
@@ -188,7 +188,7 @@ test("the SDK consumer contract rejects malformed package, lock, bytes, and vers
   const differentBytes = makeSdkArchive({ ...validMetadata, marker: "different" });
   fixtures.push(differentBytes);
   assert.throws(
-    () => verifySdkPackageBinding(differentBytes.archivePath, sdkLock(valid.integrity), "0.5.20"),
+    () => verifySdkPackageBinding(differentBytes.archivePath, sdkLock(valid.integrity), "0.5.29"),
     /bytes/u,
   );
   assert.throws(
@@ -207,7 +207,7 @@ test("the SDK CLI verifier bounds its lockfile input", () => {
       fileURLToPath(new URL("../scripts/verifySdkPackage.mjs", import.meta.url)),
       "/unavailable/sdk.tgz",
       lockPath,
-      "0.5.20",
+      "0.5.29",
     ], { encoding: "utf8", maxBuffer: Number.POSITIVE_INFINITY, stdio: "pipe" }),
     /bounded JSON input/u,
   );
@@ -288,17 +288,17 @@ test("Release creation consumes one returned ID and rechecks that exact resource
   );
 });
 
-test("the release fixtures pin CLI 0.4.7 while retaining SDK 0.5.20", () => {
+test("the release fixtures pin CLI 0.4.8 while retaining SDK 0.5.29", () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(fs.readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
   const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.equal(packageJson.version, "0.4.7");
-  assert.equal(packageLock.version, "0.4.7");
-  assert.equal(packageLock.packages?.[""]?.version, "0.4.7");
-  assert.equal(packageJson.dependencies?.["@telecrypt-io/storage"], "0.5.20");
-  assert.equal(packageLock.packages?.["node_modules/@telecrypt-io/storage"]?.version, "0.5.20");
-  assert.match(workflow, /SDK_REF: v0\.5\.20/u);
-  assert.match(workflow, /"@telecrypt-io\/storage": "0\.5\.20"/u);
+  assert.equal(packageJson.version, "0.4.8");
+  assert.equal(packageLock.version, "0.4.8");
+  assert.equal(packageLock.packages?.[""]?.version, "0.4.8");
+  assert.equal(packageJson.dependencies?.["@telecrypt-io/storage"], "0.5.29");
+  assert.equal(packageLock.packages?.["node_modules/@telecrypt-io/storage"]?.version, "0.5.29");
+  assert.match(workflow, /SDK_REF: v0\.5\.29/u);
+  assert.match(workflow, /"@telecrypt-io\/storage": "0\.5\.29"/u);
 });
 
 test("the source and hosted jobs use one exact Node release toolchain", () => {
