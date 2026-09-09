@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     globalSetup: [],
     include: [
+      "test/cliHarness.test.ts",
       "test/profile.test.ts",
       "test/storage.test.ts",
       "test/oidcApproval.test.ts",

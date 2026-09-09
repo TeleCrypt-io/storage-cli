@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { safeErrorMessage } from "../../src/output.js";
 
 const REPO_ROOT = process.cwd();
@@ -63,6 +64,128 @@ export interface RunCliOptions {
   timeoutMs?: number;
 }
 
+interface CliOutputCapture {
+  directory: string;
+  stdout: number;
+  stderr: number;
+  status: number;
+  failures: unknown[];
+  finalized: boolean;
+}
+
+function createOutputCapture(): CliOutputCapture {
+  const configuredRoot = process.env.HARNESS_ARTIFACTS_ROOT;
+  const root = configuredRoot ?? os.tmpdir();
+  let directory: string | undefined;
+  const descriptors: number[] = [];
+  try {
+    directory = fs.mkdtempSync(path.join(root, "cli-subprocess-"));
+    fs.chmodSync(directory, 0o700);
+    const open = (name: string): number => {
+      const descriptor = fs.openSync(
+        path.join(directory!, name),
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW,
+        0o600,
+      );
+      descriptors.push(descriptor);
+      return descriptor;
+    };
+    const capture = {
+      directory,
+      stdout: open("stdout"),
+      stderr: open("stderr"),
+      status: open("status"),
+      failures: [],
+      finalized: false,
+    } satisfies CliOutputCapture;
+    return capture;
+  } catch (error) {
+    const cleanupFailures: unknown[] = [];
+    for (const descriptor of descriptors) {
+      try {
+        fs.closeSync(descriptor);
+      } catch (closeError) {
+        cleanupFailures.push(new Error("CLI subprocess output capture setup close failed", { cause: closeError }));
+      }
+    }
+    const setupFailure = new Error(
+      `CLI subprocess output capture setup failed${directory ? ` at ${directory}` : ""}`,
+      { cause: error },
+    );
+    throw cleanupFailures.length > 0
+      ? new AggregateError([setupFailure, ...cleanupFailures], "CLI subprocess output capture setup failed")
+      : setupFailure;
+  }
+}
+
+function writeCaptureBytes(descriptor: number, chunk: Buffer): void {
+  let offset = 0;
+  while (offset < chunk.byteLength) {
+    const written = fs.writeSync(descriptor, chunk, offset, chunk.byteLength - offset);
+    if (written <= 0) throw new Error("capture write made no progress");
+    offset += written;
+  }
+}
+
+function captureWrite(capture: CliOutputCapture, descriptor: number, stream: string, chunk: Buffer): Error | undefined {
+  try {
+    writeCaptureBytes(descriptor, chunk);
+  } catch (error) {
+    const failure = new Error(`CLI subprocess ${stream} capture write failed`, { cause: error });
+    capture.failures.push(failure);
+    return failure;
+  }
+  return undefined;
+}
+
+function captureFinalize(capture: CliOutputCapture, code: number | null, signal: NodeJS.Signals | null): unknown[] {
+  if (capture.finalized) return capture.failures;
+  capture.finalized = true;
+  try {
+    writeCaptureBytes(
+      capture.status,
+      Buffer.from(`code=${code === null ? "null" : code}\nsignal=${signal ?? ""}\n`, "utf8"),
+    );
+  } catch (error) {
+    capture.failures.push(new Error("CLI subprocess status capture write failed", { cause: error }));
+  }
+  for (const [stream, descriptor] of [["stdout", capture.stdout], ["stderr", capture.stderr], ["status", capture.status]] as const) {
+    try {
+      fs.closeSync(descriptor);
+    } catch (error) {
+      capture.failures.push(new Error(`CLI subprocess ${stream} capture close failed`, { cause: error }));
+    }
+  }
+  return capture.failures;
+}
+
+function combineCaptureFailures(primary: unknown | undefined, failures: readonly unknown[]): unknown | undefined {
+  const distinctFailures = failures.filter((failure, index) =>
+    failure !== primary && failures.indexOf(failure) === index,
+  );
+  if (distinctFailures.length === 0) return primary;
+  if (primary === undefined) {
+    return distinctFailures.length === 1
+      ? distinctFailures[0]
+      : new AggregateError(distinctFailures, "CLI subprocess output capture failed");
+  }
+  return new AggregateError([primary, ...distinctFailures], "CLI subprocess and output capture failed");
+}
+
+function captureFailureContext(
+  capture: CliOutputCapture,
+  failure: unknown,
+  stdout: string,
+  stderr: string,
+): Error {
+  return new Error(
+    `CLI subprocess output capture failed at ${capture.directory}\n` +
+      `stdout:\n${sanitizeOutput(stdout)}\n` +
+      `stderr:\n${sanitizeOutput(stderr)}`,
+    { cause: failure },
+  );
+}
+
 /** Spawns the CLI as a genuinely separate OS process (child_process.spawn),
  * never in-process — this is what the cross-process persistence proof and
  * every other CLI test scenario depend on. */
@@ -76,12 +199,26 @@ export function runCli(
     return Promise.reject(new Error("CLI test timeout must be a positive finite number"));
   }
   return new Promise((resolve, reject) => {
+    let capture: CliOutputCapture;
+    try {
+      capture = createOutputCapture();
+    } catch (error) {
+      reject(error);
+      return;
+    }
     const executable = INSTALLED_CLI ?? TSX_BIN;
-    const executableArgs = INSTALLED_CLI ? args : [CLI_ENTRY, ...args];
-    const child = spawn(executable, executableArgs, {
-      env: minimalEnvironment(env),
-      cwd: REPO_ROOT,
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      const executableArgs = INSTALLED_CLI ? args : [CLI_ENTRY, ...args];
+      child = spawn(executable, executableArgs, {
+        env: minimalEnvironment(env),
+        cwd: REPO_ROOT,
+      });
+    } catch (error) {
+      const captureFailures = captureFinalize(capture, null, null);
+      reject(combineCaptureFailures(error, captureFailures));
+      return;
+    }
     let abortReason: Error | undefined;
     let forceKill: ReturnType<typeof setTimeout> | undefined;
     const requestAbort = (reason?: unknown) => {
@@ -103,25 +240,51 @@ export function runCli(
     options.abortSignal?.addEventListener("abort", requestAbort, { once: true });
     let stdout = "";
     let stderr = "";
-    const append = (current: string, chunk: Buffer): string => current + chunk.toString();
-    child.stdout.on("data", (d: Buffer) => (stdout = append(stdout, d)));
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let childError: unknown;
+    let finished = false;
+    const append = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+      const captureFailure = captureWrite(capture, capture[stream], stream, chunk);
+      if (captureFailure) requestAbort(captureFailure);
+      const decoded = (stream === "stdout" ? stdoutDecoder : stderrDecoder).write(chunk);
+      if (stream === "stdout") {
+        stdout += decoded;
+      } else {
+        stderr += decoded;
+        options.onStderr?.(sanitizeOutput(stderr));
+      }
+    };
+    child.stdout.on("data", (d: Buffer) => append("stdout", d));
     child.stderr.on("data", (d: Buffer) => {
-      stderr = append(stderr, d);
-      options.onStderr?.(sanitizeOutput(stderr));
+      append("stderr", d);
     });
     child.stdin.end(options.stdin ?? "");
     child.on("error", (err) => {
-      clearTimeout(timeout);
-      if (forceKill) clearTimeout(forceKill);
-      options.abortSignal?.removeEventListener("abort", requestAbort);
-      reject(abortReason ?? err);
+      childError = err;
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
+      if (finished) return;
+      finished = true;
       clearTimeout(timeout);
       if (forceKill) clearTimeout(forceKill);
       options.abortSignal?.removeEventListener("abort", requestAbort);
-      if (abortReason) {
-        reject(abortReason);
+      stdout += stdoutDecoder.end();
+      const finalStderr = stderrDecoder.end();
+      if (finalStderr) {
+        stderr += finalStderr;
+        options.onStderr?.(sanitizeOutput(stderr));
+      }
+      const captureFailures = captureFinalize(capture, code, signal);
+      const primary = abortReason ?? childError;
+      const processFailure = primary ?? (captureFailures.length > 0 && (code ?? -1) !== 0
+        ? new Error(`CLI test subprocess exited ${code ?? -1}${signal ? ` (${signal})` : ""}`)
+        : undefined);
+      const combinedFailure = combineCaptureFailures(processFailure, captureFailures);
+      if (combinedFailure) {
+        reject(captureFailures.length > 0
+          ? captureFailureContext(capture, combinedFailure, stdout, stderr)
+          : combinedFailure);
       } else {
         // Successful stdout is the artifact under test: redacting identity
         // fields here made sharing tests pass redaction placeholders instead
