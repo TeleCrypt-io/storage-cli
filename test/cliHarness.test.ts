@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as fs from "node:fs";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -235,7 +235,7 @@ describe("CLI subprocess output capture", () => {
     const root = artifactRoot();
     let failure: unknown;
     try {
-      await runCli(null as unknown as string[], {});
+      await runCli({} as unknown as string[], {});
     } catch (error) {
       failure = error;
     }
