@@ -151,7 +151,7 @@ export async function loginAndInitialize(
           "login initialization failed after server revocation; local cleanup is incomplete — run `storage logout`",
         ));
       }
-      throwLoginFailure(new StorageError("login initialization failed; server session was revoked — retry login"));
+      return throwLoginFailure(new StorageError("login initialization failed; server session was revoked — retry login"));
     }
   } catch (error) {
     operationFailed = true;
