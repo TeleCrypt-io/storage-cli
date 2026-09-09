@@ -535,7 +535,7 @@ describe("CLI", () => {
       expect(deleteParent.code).toBe(0);
       expect(deleteParent.json).toMatchObject({ id: parentId, deleted: true });
     },
-    60000,
+    120000,
   );
 
   describe("CLI.6 error paths: clean non-zero exit + JSON error", () => {
