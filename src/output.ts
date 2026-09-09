@@ -57,7 +57,7 @@ function isDiagnosticReference(value: unknown): value is object {
 }
 
 function diagnosticKey(key: PropertyKey): string {
-  return typeof key === "symbol" ? key.toString() : key;
+  return String(key);
 }
 
 function diagnosticDisplayKey(key: PropertyKey): string {
@@ -168,6 +168,13 @@ function rawErrorMessage(error: unknown, seen = new WeakSet<object>()): string {
         continue;
       }
       seen.add(current);
+    } else {
+      try {
+        messages.push(`${label}${String(current)}`);
+      } catch {
+        messages.push(`${label}unknown diagnostic value`);
+      }
+      continue;
     }
     try {
       if (current instanceof Error) {

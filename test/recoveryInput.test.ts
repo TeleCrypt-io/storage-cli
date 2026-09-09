@@ -79,7 +79,7 @@ describe("hidden recovery-key prompt input", () => {
     const pending = promptForRecoveryKey(
       new AbortController().signal,
       stdin as unknown as NodeJS.ReadStream,
-      (value) => {
+      (_value) => {
         writes += 1;
         if (writes > 1) throw new Error("prompt output failed");
       },

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo=$(mktemp -d "${TMPDIR:-/tmp}/storage-cli-transport.XXXXXX")
-cleanup() { rm -rf -- "$repo"; }
-trap cleanup EXIT
+fixture_root="${HARNESS_ARTIFACTS_ROOT:-${TMPDIR:-/tmp}}"
+repo=$(mktemp -d "$fixture_root/storage-cli-transport.XXXXXX")
+printf 'retained synthetic repository: %s\n' "$repo"
 
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null

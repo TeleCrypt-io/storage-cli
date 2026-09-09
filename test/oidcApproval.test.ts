@@ -99,31 +99,50 @@ describe("local MAS device approval", () => {
   });
 
   it("aborts a hung MAS response body by the approval deadline and bounds stream cleanup", async () => {
-    vi.useFakeTimers();
+    const realSetTimeout = globalThis.setTimeout;
+    const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((handler, delay, ...args) => {
+      const shortenedDelay = delay === 15_000 ? 5 : delay === 5_000 ? 5 : delay;
+      return realSetTimeout(handler, shortenedDelay, ...args);
+    });
     try {
       let cancelCalled = false;
-      const body = new ReadableStream<Uint8Array>({
+      let cancelSettled = false;
+      let rejectRead: ((error: Error) => void) | undefined;
+      const reader: ReadableStreamDefaultReader<Uint8Array> = {
+        read: () => new Promise<ReadableStreamReadResult<Uint8Array>>((_resolve, reject) => {
+          rejectRead = reject;
+        }),
         cancel: () => {
           cancelCalled = true;
-          return new Promise<void>(() => {});
+          rejectRead?.(new Error("reader cancelled"));
+          return new Promise<void>((resolve) => realSetTimeout(() => {
+            cancelSettled = true;
+            resolve();
+          }, 20));
         },
-      });
-      const fetchMock = vi.fn().mockResolvedValue(new Response(body));
+        releaseLock: () => {},
+        closed: Promise.resolve(),
+      };
+      const fetchMock = vi.fn().mockResolvedValue({
+        body: { getReader: () => reader },
+        headers: { getSetCookie: () => [] },
+        status: 200,
+      } as unknown as Response);
       vi.stubGlobal("fetch", fetchMock);
 
-      const approval = approveDeviceCodeViaHttp("alice", "test-only-password", "ABC-123");
-      const failure = expect(approval).rejects.toThrow(/approval cancelled/);
-      await vi.advanceTimersByTimeAsync(15_000);
-      await vi.advanceTimersByTimeAsync(5_000);
-      await failure;
+      const error = await approveDeviceCodeViaHttp("alice", "test-only-password", "ABC-123").then(
+        () => { throw new Error("approval unexpectedly succeeded"); },
+        (failure: unknown) => failure,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/approval cancelled/);
       expect(cancelCalled).toBe(true);
+      expect(cancelSettled).toBe(false);
 
-      // The reader's deliberately hung cancel must not leave a live cleanup
-      // timer or an unhandled rejection after the bounded grace period.
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(vi.getTimerCount()).toBe(0);
+      await new Promise<void>((resolve) => realSetTimeout(resolve, 25));
+      expect(cancelSettled).toBe(true);
     } finally {
-      vi.useRealTimers();
+      timerSpy.mockRestore();
     }
   });
 

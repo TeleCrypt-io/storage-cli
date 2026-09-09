@@ -58,7 +58,7 @@ export async function loginAndInitialize(
           recoveryFailures.push(closeError);
         }
       }
-      const throwLoginFailure = (failure: unknown): never => {
+      function throwLoginFailure(failure: unknown): never {
         const causes = recoveryFailures.filter((cause) => cause !== failure);
         const safeFailure = failure instanceof StorageError
           ? failure
@@ -71,7 +71,7 @@ export async function loginAndInitialize(
           );
         }
         throw safeFailure;
-      };
+      }
       let latestSession: Session | undefined;
       if (sessionPersisted) {
         try {

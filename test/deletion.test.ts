@@ -74,9 +74,12 @@ describe("CLI authoritative deletion refusals", () => {
 
     expect(process.exitCode).toBe(1);
     expect(stdout).toBe("");
-    expect(finalJson(stderr)).toEqual({
-      error: "cannot delete a nonempty vault or folder; delete its files and empty child folders first",
-    });
+    const diagnostic = finalJson(stderr).error;
+    expect(diagnostic).toEqual(expect.stringContaining(
+      "Error: cannot delete a nonempty vault or folder; delete its files and empty child folders first",
+    ));
+    expect(diagnostic).toEqual(expect.stringContaining(`treeId: ${treeId}`));
+    expect(diagnostic).toEqual(expect.stringContaining("code: NON_EMPTY_TREE"));
     expect(mocks[operation]).toHaveBeenCalledWith(
       storage,
       treeId,
@@ -110,7 +113,10 @@ describe("CLI authoritative deletion refusals", () => {
     await main(["node", "telecrypt-io", "storage", "vault", "delete", "!vault:example.test", "--json"]);
 
     expect(process.exitCode).toBe(1);
-    expect(finalJson(stderr)).toEqual({ error: "storage operation and cleanup failed; delete failed; cleanup failed" });
+    const diagnostic = finalJson(stderr).error;
+    expect(diagnostic).toEqual(expect.stringContaining("AggregateError: storage operation and cleanup failed"));
+    expect(diagnostic).toEqual(expect.stringContaining("aggregate child 0: Error: delete failed"));
+    expect(diagnostic).toEqual(expect.stringContaining("aggregate child 1: Error: cleanup failed"));
     expect(mocks.close).toHaveBeenCalledTimes(1);
   });
 });

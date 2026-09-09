@@ -482,10 +482,10 @@ export function acquireProfileLock(dir: string = profileDir()): ProfileLock {
   const resolvedDirectory = path.resolve(dir);
   const directoryFd = openSecureProfileDirectory(dir);
   const lockPath = anchoredProfilePath(directoryFd, ".profile.lock");
-  const throwWithDirectoryCloseFailure = (primary: unknown, cleanupFailures: unknown[] = []): never => {
+  function throwWithDirectoryCloseFailure(primary: unknown, cleanupFailures: unknown[] = []): never {
     attemptCleanup(cleanupFailures, () => fs.closeSync(directoryFd));
     throwCombinedFailures(primary, true, cleanupFailures, "profile lock cleanup failed");
-  };
+  }
   const token = randomUUID();
   const lockContents = JSON.stringify({ pid: process.pid, token, startTime: currentProcessStartIdentity });
   const cleanupCreatedLock = (cleanupFailures: unknown[]): void => {
