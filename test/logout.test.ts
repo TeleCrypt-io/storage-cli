@@ -16,11 +16,11 @@ const session: Session = {
   refreshToken: "secret-refresh-token",
   oidcClientId: "client-id",
   oidcTokenEndpoint: "https://backend.telecrypt.io/auth/token",
-  oidcRevocationEndpoint: "https://backend.telecrypt.io/auth/revoke",
 };
 
 const LOGOUT_URL = "https://backend.telecrypt.io/_matrix/client/v3/logout";
 const TOKEN_URL = "https://backend.telecrypt.io/auth/token";
+const REVOCATION_URL = "https://backend.telecrypt.io/auth/revoke";
 const directories: string[] = [];
 
 function fixtureDirectory(prefix: string): string {
@@ -79,6 +79,59 @@ describe("server logout", () => {
       oidcRevocationEndpoint: "https://evil.example/revoke",
     })).rejects.toThrow(/OIDC revocation endpoint/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("revokes a current OAuth session through its bound revocation endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(exactResponse(REVOCATION_URL, null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await requestServerLogout({ ...session, oidcRevocationEndpoint: REVOCATION_URL });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      REVOCATION_URL,
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          token: session.accessToken,
+          token_type_hint: "access_token",
+          client_id: session.oidcClientId,
+        }),
+        redirect: "manual",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it("rejects incomplete OAuth revocation state before making a request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(requestServerLogout({
+      ...session,
+      oidcClientId: undefined,
+      oidcRevocationEndpoint: REVOCATION_URL,
+    })).rejects.toThrow("persisted OIDC revocation state is incomplete");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("retains an OAuth revocation failure response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(exactResponse(
+      REVOCATION_URL,
+      JSON.stringify({ error: "temporarily unavailable" }),
+      { status: 503 },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    let failure: unknown;
+    try {
+      await requestServerLogout({ ...session, oidcRevocationEndpoint: REVOCATION_URL });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toHaveProperty("message", "OIDC revocation failed (HTTP 503)");
+    expect((failure as Error).cause).toHaveProperty("message", expect.stringContaining("temporarily unavailable"));
   });
 
   it("sends a bounded authenticated request and accepts a successful response", async () => {

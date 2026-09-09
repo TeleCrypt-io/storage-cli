@@ -211,13 +211,16 @@ export async function requestServerLogout(
 
   const trustedHomeserver = assertTrustedHomeserver(session.homeserver);
   const issuer = new URL(assertOidcEndpoint(session.oidcIssuer, trustedHomeserver, "OIDC issuer"));
-  if (session.oidcRevocationEndpoint !== undefined) {
-    assertOidcEndpoint(
+  const revocationEndpoint = session.oidcRevocationEndpoint !== undefined
+    ? assertOidcEndpoint(
       session.oidcRevocationEndpoint,
       trustedHomeserver,
       "OIDC revocation endpoint",
       issuer,
-    );
+    )
+    : undefined;
+  if (revocationEndpoint !== undefined && !isBoundedOpaqueValue(session.oidcClientId)) {
+    throw new StorageError("persisted OIDC revocation state is incomplete");
   }
   const base = new URL(trustedHomeserver);
   if (!base.pathname.endsWith("/")) base.pathname += "/";
@@ -270,7 +273,38 @@ export async function requestServerLogout(
     const consumed = await consumeLogoutResponse(response, controller.signal);
     return { status: response.status, body: consumed?.value, bodyText: consumed?.text };
   };
+  const requestOidcRevocation = async (): Promise<void> => {
+    const response = await fetch(revocationEndpoint!, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        token: session.accessToken,
+        token_type_hint: "access_token",
+        client_id: session.oidcClientId!,
+      }),
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    if (response.url !== revocationEndpoint) {
+      const error = new StorageError("OIDC revocation redirected unexpectedly");
+      controller.abort(error);
+      const cleanupFailures = await cleanupLogoutResponseBody(response);
+      throwCombinedFailures(error, true, cleanupFailures, "server logout response cleanup failed");
+    }
+    const consumed = await consumeLogoutResponse(response, controller.signal);
+    if (response.status !== 200) {
+      const error = new StorageError(`OIDC revocation failed (HTTP ${response.status})`);
+      if (consumed?.text !== undefined) {
+        withCause(error, new Error(`OIDC revocation response body: ${safeDiagnosticText(consumed.text)}`));
+      }
+      throw error;
+    }
+  };
   const operation = (async () => {
+    if (revocationEndpoint !== undefined) {
+      await requestOidcRevocation();
+      return;
+    }
     let credentials: LogoutCredentials = session;
     let logoutResponse = await requestLogout(credentials.accessToken);
     if (logoutResponse.status === 200 || logoutResponse.status === 204) return;

@@ -99,9 +99,9 @@ describe("secret-bearing CLI profile state", () => {
     expect(expectedMatrixServerName("https://backend-stage.telecrypt.io")).toBeNull();
     expect(expectedMatrixServerName("https://backend.telecrypt.io:443")).toBeNull();
     expect(expectedMatrixServerName("https://backend.telecrypt.io/path")).toBeNull();
-    expect(expectedMatrixServerName("http://localhost:8008")).toBe("example.test");
+    expect(expectedMatrixServerName("http://localhost:8008")).toBe("localhost:8008");
     expect(expectedMatrixServerName("http://localhost:8008/"))
-      .toBe("example.test");
+      .toBe("localhost:8008");
     expect(isCanonicalMatrixUserId("@alice:telecrypt.io")).toBe(true);
     expect(isCanonicalMatrixUserId("@Alice:telecrypt.io")).toBe(false);
     expect(isCanonicalMatrixUserId("@alice:telecrypt.io:0443")).toBe(false);

@@ -17,7 +17,7 @@ export const TELECRYPT_HOMESERVERS = Object.freeze({
 });
 
 export const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-export const LOCAL_HOMESERVER_SERVER_NAME = "example.test";
+export const LOCAL_HOMESERVER_SERVER_NAME = "localhost:8008";
 
 export function isExactLoopbackHost(hostname: string): boolean {
   return LOOPBACK_HOSTNAMES.has(hostname);

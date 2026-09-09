@@ -39,8 +39,8 @@ describe("production CLI runtime", () => {
     writeSession(
       {
         homeserver: "http://localhost:8008",
-        userId: "@fixture:example.test",
-        matrixServerName: "example.test",
+        userId: "@fixture:localhost:8008",
+        matrixServerName: "localhost:8008",
         deviceId: "DEVICE",
         accessToken: "access-token",
         oidcIssuer: "http://localhost:8008/",

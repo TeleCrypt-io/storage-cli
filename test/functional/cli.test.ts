@@ -127,8 +127,8 @@ describe("CLI", () => {
     const dir = freshProfileDir("concurrent-profile");
     const session: Session = {
       homeserver: HOMESERVER,
-      userId: "@concurrent:example.test",
-      matrixServerName: "example.test",
+      userId: "@concurrent:localhost:8008",
+      matrixServerName: "localhost:8008",
       deviceId: "CONCURRENTDEVICE",
       accessToken: "concurrent-access-token",
       oidcIssuer: `${HOMESERVER}/auth/`,
@@ -173,8 +173,8 @@ describe("CLI", () => {
       if (!address || typeof address === "string") throw new Error("test server did not expose a port");
       const session: Session = {
         homeserver: `http://127.0.0.1:${address.port}`,
-        userId: "@logout:example.test",
-        matrixServerName: "example.test",
+        userId: "@logout:localhost:8008",
+        matrixServerName: "localhost:8008",
         deviceId: "LOGOUTDEVICE",
         accessToken: "logout-access-token",
         oidcIssuer: `http://127.0.0.1:${address.port}/auth/`,
@@ -191,7 +191,7 @@ describe("CLI", () => {
 
       expect(result.code).not.toBe(0);
       expect(result.json).toMatchObject({
-        error: expect.stringContaining("StorageError: server logout failed (HTTP 503); stack:"),
+        error: expect.stringContaining("StorageError: OIDC revocation failed (HTTP 503); stack:"),
       });
       expect(result.stderr).not.toContain(session.accessToken);
       expect(fs.existsSync(sessionPath(dir))).toBe(true);
