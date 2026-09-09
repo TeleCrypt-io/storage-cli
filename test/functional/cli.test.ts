@@ -604,14 +604,18 @@ describe("CLI", () => {
       const dir = freshProfileDir("nosession");
       const res = await cliJson(["storage", "whoami"], { TELECRYPT_IO_STORAGE_HOME: dir });
       expect(res.code).not.toBe(0);
-      expect(res.json.error).toBe("not logged in");
+      expect(res.json.error).toEqual(
+        expect.stringContaining("StorageError: not logged in; stack:"),
+      );
     });
 
     it("non-json mode also exits non-zero with a final error line", async () => {
       const dir = freshProfileDir("textmode");
       const result = await runCli(["storage", "whoami"], { TELECRYPT_IO_STORAGE_HOME: dir });
       expect(result.code).not.toBe(0);
-      expect(result.stderr.trim().split(/\r?\n/u).at(-1)).toBe("Error: not logged in");
+      expect(result.stderr.trim().split(/\r?\n/u).at(-1)).toEqual(
+        expect.stringContaining("Error: StorageError: not logged in; stack:"),
+      );
     });
   });
 });
