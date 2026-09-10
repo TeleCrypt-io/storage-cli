@@ -36,7 +36,7 @@
   "dependencies": {
     "commander": "15.0.0",
     "fake-indexeddb": "6.2.5",
-    "@telecrypt-io/storage": "0.5.29",
+    "@telecrypt-io/storage": "0.5.30",
     "matrix-js-sdk": "42.2.0"
   },
   "devDependencies": {
