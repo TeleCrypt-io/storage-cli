@@ -71,7 +71,6 @@ for the canonical development, acceptance, failure-handling, and production boun
 Never replace, delete, or rebuild a release archive. A correction requires a new source commit,
 new semver version, and a fresh annotated `storage-cli-v*` tag.
 
-The current unreleased CLI source uses package version `0.4.9` while selecting the exact
-published, immutable `@telecrypt-io/storage` `0.5.30` / `matrix-js-sdk` `42.2.0` binding. A fresh
-CLI semver version, hosted verification, and immutable release are still required; do not claim
-release readiness until every required check passes.
+The current CLI source uses package version `0.4.10` while selecting the exact
+published, immutable `@telecrypt-io/storage` `0.5.31` / `matrix-js-sdk` `42.2.0` binding. The
+immutable `storage-cli-v0.4.10` release is produced only after the hosted verification checks pass.
