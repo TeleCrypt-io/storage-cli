@@ -6,18 +6,17 @@ import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
 import { MAX_MEDIA_FILE_BYTES } from "./limits.js";
 
 const DIRECTORY_FLAGS = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
-const PROC_FD_ROOT = "/proc/self/fd";
+const PROC_FD_ROOT = ["/proc/self/fd", "/dev/fd"].find((candidate) => fs.existsSync(candidate));
 
 function securePathError(): StorageError {
-  return new StorageError("safe file operations require Linux /proc/self/fd support");
+  return new StorageError("safe file operations require a file-descriptor filesystem");
 }
 
 /** Opens every directory component without following a path symlink. Node has
- * no openat(2) wrapper; on Linux, a proc-fd path gives the same stable
- * directory anchor for the remaining operations. Other topologies fail closed
- * instead of claiming that a pathname walk is race-free. */
+ * no openat(2) wrapper; a proc-fd or dev-fd path gives the same stable
+ * directory anchor for the remaining operations. */
 function openSecureDirectory(directory: string): number {
-  if (process.platform !== "linux" || !fs.existsSync(PROC_FD_ROOT)) throw securePathError();
+  if (!PROC_FD_ROOT) throw securePathError();
   const resolved = path.resolve(directory);
   if (path.parse(resolved).root !== "/") throw securePathError();
 
@@ -57,6 +56,7 @@ function anchoredPath(directoryFd: number, name: string): string {
   if (!name || name === "." || name === ".." || name.includes("/")) {
     throw new StorageError("file path must name a regular file");
   }
+  if (!PROC_FD_ROOT) throw securePathError();
   return path.join(PROC_FD_ROOT, String(directoryFd), name);
 }
 

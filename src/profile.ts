@@ -4,10 +4,9 @@ import * as os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { expectedMatrixServerName } from "./topology.js";
 import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
-import { MAX_PRIVATE_FILE_BYTES } from "./limits.js";
 
 export { expectedMatrixServerName } from "./topology.js";
-export { MAX_MEDIA_FILE_BYTES, MAX_PRIVATE_FILE_BYTES } from "./limits.js";
+export { MAX_MEDIA_FILE_BYTES } from "./limits.js";
 
 export interface Session {
   homeserver: string;
@@ -263,7 +262,6 @@ export function logoutMarkerPath(dir: string = profileDir()): string {
 
 const profileLockPath = (dir: string): string => path.join(dir, ".profile.lock");
 export const MAX_SESSION_BYTES = 16 * 1024;
-/** Private local profile and crypto snapshot ceiling; media has its own 128 MiB limit. */
 
 function serializeBoundedSession(value: Session | PendingSession, label: string): string {
   const serialized = JSON.stringify(value, null, 2);
@@ -277,11 +275,11 @@ function serializeBoundedSession(value: Session | PendingSession, label: string)
 }
 
 const PROFILE_DIRECTORY_FLAGS = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
-const PROFILE_PROC_FD_ROOT = "/proc/self/fd";
+const PROFILE_PROC_FD_ROOT = ["/proc/self/fd", "/dev/fd"].find((candidate) => fs.existsSync(candidate));
 
 function openSecureProfileDirectory(dir: string): number {
-  if (process.platform !== "linux" || !fs.existsSync(PROFILE_PROC_FD_ROOT)) {
-    throw new Error("secure profile state requires Linux /proc/self/fd support");
+  if (!PROFILE_PROC_FD_ROOT) {
+    throw new Error("secure profile state requires a file-descriptor filesystem");
   }
   const resolved = path.resolve(dir);
   if (path.parse(resolved).root !== "/") throw new Error("secure profile path must be absolute");
@@ -341,11 +339,18 @@ function openSecureProfileDirectory(dir: string): number {
   throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "secure profile directory cleanup failed");
 }
 
+function anchoredProfileDirectory(directoryFd: number): string {
+  if (!PROFILE_PROC_FD_ROOT) {
+    throw new Error("secure profile state requires a file-descriptor filesystem");
+  }
+  return path.join(PROFILE_PROC_FD_ROOT, String(directoryFd));
+}
+
 function anchoredProfilePath(directoryFd: number, name: string): string {
   if (!name || name === "." || name === ".." || name.includes("/")) {
     throw new Error("profile file name is invalid");
   }
-  return path.join(PROFILE_PROC_FD_ROOT, String(directoryFd), name);
+  return path.join(anchoredProfileDirectory(directoryFd), name);
 }
 
 function processStartIdentity(pid: number): string | undefined {
@@ -730,7 +735,7 @@ function directoryHandleFor(
   return { fd: openSecureProfileDirectory(resolved), owned: true };
 }
 
-function readPrivateFileAt(directoryFd: number, name: string, maxBytes: number): Buffer | null {
+function readPrivateFileAt(directoryFd: number, name: string, maxBytes?: number): Buffer | null {
   const filePath = anchoredProfilePath(directoryFd, name);
   let observed: fs.Stats;
   try {
@@ -765,7 +770,9 @@ function readPrivateFileAt(directoryFd: number, name: string, maxBytes: number):
     if ((stat.mode & 0o077) !== 0) {
       throw profileSecurityError(filePath, "secret file became accessible by group or other users while it was being opened");
     }
-    if (stat.size > maxBytes) throw new Error(`profile file exceeds maximum size of ${maxBytes} bytes`);
+    if (maxBytes !== undefined && stat.size > maxBytes) {
+      throw new Error(`profile file exceeds maximum size of ${maxBytes} bytes`);
+    }
     const out = Buffer.alloc(stat.size);
     let offset = 0;
     while (offset < out.length) {
@@ -809,7 +816,7 @@ function readPrivateFileAt(directoryFd: number, name: string, maxBytes: number):
   return result!;
 }
 
-export function readPrivateFile(filePath: string, maxBytes: number, heldLock?: ProfileLock): Buffer | null {
+export function readPrivateFile(filePath: string, maxBytes?: number, heldLock?: ProfileLock): Buffer | null {
   const directory = path.dirname(filePath);
   if (!heldLock) assertSecureProfileDir(directory);
   const handle = directoryHandleFor(directory, heldLock);
@@ -878,7 +885,7 @@ export function assertFreshProfileUnlocked(dir: string = profileDir(), heldLock?
   let primaryError: unknown;
   let hasPrimary = false;
   try {
-    entries = fs.readdirSync(path.join(PROFILE_PROC_FD_ROOT, String(handle.fd)));
+    entries = fs.readdirSync(anchoredProfileDirectory(handle.fd));
   } catch (error) {
     hasPrimary = true;
     primaryError = error;
@@ -900,10 +907,6 @@ export function writePrivateFile(
   contents: string | NodeJS.ArrayBufferView,
   heldLock?: ProfileLock,
 ): void {
-  const size = typeof contents === "string" ? Buffer.byteLength(contents, "utf8") : contents.byteLength;
-  if (size > MAX_PRIVATE_FILE_BYTES) {
-    throw new Error(`profile file exceeds maximum size of ${MAX_PRIVATE_FILE_BYTES} bytes`);
-  }
   const parent = path.dirname(destination);
   if (!heldLock) ensureProfileDir(parent);
   const handle = directoryHandleFor(parent, heldLock);
@@ -1106,7 +1109,7 @@ export function clearProfileUnlocked(
       }
     }
     const remaining = fs
-      .readdirSync(path.join(PROFILE_PROC_FD_ROOT, String(directoryFd)))
+      .readdirSync(anchoredProfileDirectory(directoryFd))
       .filter((entry) => entry !== path.basename(profileLockPath(dir)))
       .filter((entry) => !preserveLogoutMarker || entry !== path.basename(marker));
     if (remaining.length > 0) {

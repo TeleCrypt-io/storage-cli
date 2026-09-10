@@ -34,7 +34,6 @@ import {
   writePrivateFile,
   type ProfileLock,
 } from "./profile.js";
-import { MAX_PRIVATE_FILE_BYTES } from "./limits.js";
 import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
 
 interface IndexSpec {
@@ -69,38 +68,6 @@ export interface CryptoSnapshot {
 
 /** Prefix used by @telecrypt-io/storage for its rust-crypto databases. */
 export const TELECRYPT_CRYPTO_DATABASE_PREFIX = "telecrypt-io-storage::";
-export const MAX_SNAPSHOT_BYTES = MAX_PRIVATE_FILE_BYTES;
-const MAX_SNAPSHOT_DATABASES = 16;
-const MAX_SNAPSHOT_STORES = 128;
-const MAX_SNAPSHOT_RECORDS = 100_000;
-const MAX_SNAPSHOT_ACCUMULATED_BYTES = MAX_SNAPSHOT_BYTES;
-const MAX_SNAPSHOT_NAME_BYTES = 1024;
-
-interface SnapshotBudget {
-  records: number;
-  bytes: number;
-}
-
-function accountSnapshotRecord(budget: SnapshotBudget, record: StoreRecord): void {
-  if (budget.records >= MAX_SNAPSHOT_RECORDS) {
-    throw new Error("crypto snapshot contains too many records");
-  }
-  let encoded: Uint8Array;
-  try {
-    encoded = v8.serialize(record);
-  } catch {
-    throw new Error("crypto snapshot contains an unserializable record");
-  }
-  // Include a conservative container overhead. The aggregate budget is
-  // checked while cursors are read, before an attacker can accumulate an
-  // unbounded in-memory export that is only rejected at final serialization.
-  const accounted = encoded.byteLength + 64;
-  if (accounted > MAX_SNAPSHOT_ACCUMULATED_BYTES - budget.bytes) {
-    throw new Error("crypto snapshot exceeds the 64 MiB aggregate limit");
-  }
-  budget.bytes += accounted;
-  budget.records += 1;
-}
 
 function getIndexedDB(): IDBFactory {
   const idb = (globalThis as unknown as { indexedDB?: IDBFactory }).indexedDB;
@@ -205,7 +172,6 @@ function promisifyTxDone(tx: IDBTransaction, signal?: AbortSignal): Promise<void
 function readAllRecords(
   store: IDBObjectStore,
   tx: IDBTransaction,
-  budget: SnapshotBudget,
   signal?: AbortSignal,
 ): Promise<StoreRecord[]> {
   return new Promise((resolve, reject) => {
@@ -242,23 +208,6 @@ function readAllRecords(
         const record = outOfLine
           ? { key: cursor.primaryKey, value: cursor.value }
           : { value: cursor.value };
-        try {
-          accountSnapshotRecord(budget, record);
-        } catch (error) {
-          const primaryError = error instanceof Error ? error : new Error(String(error));
-          try {
-            tx.abort();
-          } catch (cleanupError) {
-            finish(new AggregateError(
-              [primaryError, cleanupError],
-              "crypto snapshot validation and transaction cleanup failed",
-              { cause: primaryError },
-            ));
-            return;
-          }
-          finish(primaryError);
-          return;
-        }
         out.push(record);
         cursor.continue();
       } else {
@@ -279,15 +228,10 @@ export async function exportIndexedDB(signal?: AbortSignal): Promise<CryptoSnaps
   const infos = await abortableSnapshotOperation(idb.databases(), signal);
   throwIfSnapshotAborted(signal);
   const dbs: DbSnapshot[] = [];
-  const budget: SnapshotBudget = { records: 0, bytes: 0 };
 
   for (const info of infos) {
     throwIfSnapshotAborted(signal);
     if (!info.name || !info.name.startsWith(TELECRYPT_CRYPTO_DATABASE_PREFIX)) continue;
-    if (Buffer.byteLength(info.name, "utf8") > MAX_SNAPSHOT_NAME_BYTES) {
-      throw new Error("crypto snapshot database name exceeds the bounded length");
-    }
-    if (dbs.length >= MAX_SNAPSHOT_DATABASES) throw new Error("crypto snapshot contains too many databases");
     const db = await openDatabase(idb, info.name, info.version, signal);
     let primaryError: unknown;
     let hasPrimary = false;
@@ -297,12 +241,8 @@ export async function exportIndexedDB(signal?: AbortSignal): Promise<CryptoSnaps
       const records: Record<string, StoreRecord[]> = {};
 
       if (storeNames.length > 0) {
-        if (storeNames.length > MAX_SNAPSHOT_STORES) throw new Error("crypto snapshot contains too many stores");
         for (const storeName of storeNames) {
           throwIfSnapshotAborted(signal);
-          if (Buffer.byteLength(storeName, "utf8") > MAX_SNAPSHOT_NAME_BYTES) {
-            throw new Error("crypto snapshot store name exceeds the bounded length");
-          }
           // Keep each cursor in its own transaction. A readonly IndexedDB
           // transaction may auto-commit as soon as its last request settles;
           // awaiting one store before opening the next would otherwise make
@@ -310,9 +250,6 @@ export async function exportIndexedDB(signal?: AbortSignal): Promise<CryptoSnaps
           const tx = db.transaction([storeName], "readonly");
           const store = tx.objectStore(storeName);
           const indexes: IndexSpec[] = Array.from(store.indexNames).map((iname) => {
-            if (Buffer.byteLength(iname, "utf8") > MAX_SNAPSHOT_NAME_BYTES) {
-              throw new Error("crypto snapshot index name exceeds the bounded length");
-            }
             const idx = store.index(iname);
             return {
               name: idx.name,
@@ -327,7 +264,7 @@ export async function exportIndexedDB(signal?: AbortSignal): Promise<CryptoSnaps
             autoIncrement: store.autoIncrement,
             indexes,
           });
-          records[storeName] = await readAllRecords(store, tx, budget, signal);
+          records[storeName] = await readAllRecords(store, tx, signal);
         }
       }
 
@@ -431,7 +368,7 @@ export async function importIndexedDB(snapshot: CryptoSnapshot, signal?: AbortSi
 }
 
 export function loadSnapshotFromDisk(path: string, heldLock?: ProfileLock): CryptoSnapshot | null {
-  const buf = readPrivateFile(path, MAX_SNAPSHOT_BYTES, heldLock);
+  const buf = readPrivateFile(path, undefined, heldLock);
   if (!buf) return null;
   if (buf.length === 0) return null;
   let snapshot: unknown;
@@ -447,9 +384,6 @@ export function loadSnapshotFromDisk(path: string, heldLock?: ProfileLock): Cryp
 export function saveSnapshotToDisk(path: string, snapshot: CryptoSnapshot, heldLock?: ProfileLock): void {
   validateSnapshot(snapshot);
   const serialized = v8.serialize(snapshot);
-  if (serialized.byteLength > MAX_SNAPSHOT_BYTES) {
-    throw new Error("crypto snapshot exceeds the 64 MiB serialized limit");
-  }
   writePrivateFile(path, serialized, heldLock);
 }
 
@@ -482,15 +416,11 @@ function validateSnapshot(value: unknown): asserts value is CryptoSnapshot {
     throw new Error("crypto snapshot has an invalid shape");
   }
   const dbs = (value as CryptoSnapshot).dbs;
-  if (dbs.length > MAX_SNAPSHOT_DATABASES) throw new Error("crypto snapshot contains too many databases");
-  let totalRecords = 0;
-  let accountedBytes = 0;
   const databaseNames = new Set<string>();
   const validName = (name: unknown, kind: string): name is string => {
     if (
       typeof name !== "string" ||
       name.length === 0 ||
-      Buffer.byteLength(name, "utf8") > MAX_SNAPSHOT_NAME_BYTES ||
       /[\u0000-\u001f\u007f-\u009f]/u.test(name)
     ) {
       throw new Error(`crypto snapshot ${kind} name is invalid`);
@@ -500,12 +430,11 @@ function validateSnapshot(value: unknown): asserts value is CryptoSnapshot {
   const validKeyPath = (keyPath: unknown): keyPath is string | string[] | null => {
     if (keyPath === null) return true;
     const parts = typeof keyPath === "string" ? [keyPath] : keyPath;
-    if (!Array.isArray(parts) || parts.length === 0 || parts.length > 64) return false;
+    if (!Array.isArray(parts) || parts.length === 0) return false;
     return parts.every(
       (part) =>
         typeof part === "string" &&
         part.length > 0 &&
-        Buffer.byteLength(part, "utf8") <= MAX_SNAPSHOT_NAME_BYTES &&
         !/[\u0000-\u001f\u007f-\u009f]/u.test(part),
     );
   };
@@ -515,7 +444,7 @@ function validateSnapshot(value: unknown): asserts value is CryptoSnapshot {
     }
     if (databaseNames.has(db.name)) throw new Error("crypto snapshot contains duplicate databases");
     databaseNames.add(db.name);
-    if (!Number.isSafeInteger(db.version) || db.version < 1 || !Array.isArray(db.stores) || db.stores.length > MAX_SNAPSHOT_STORES) {
+    if (!Number.isSafeInteger(db.version) || db.version < 1 || !Array.isArray(db.stores)) {
       throw new Error("crypto snapshot contains invalid database metadata");
     }
     if (!db.records || typeof db.records !== "object" || Array.isArray(db.records)) {
@@ -559,13 +488,6 @@ function validateSnapshot(value: unknown): asserts value is CryptoSnapshot {
         if ((store.keyPath === null) !== hasKey) {
           throw new Error("crypto snapshot record key does not match its store key path");
         }
-        const encoded = v8.serialize(record);
-        if (encoded.byteLength + 64 > MAX_SNAPSHOT_ACCUMULATED_BYTES - accountedBytes) {
-          throw new Error("crypto snapshot exceeds the 64 MiB aggregate limit");
-        }
-        accountedBytes += encoded.byteLength + 64;
-        totalRecords += 1;
-        if (totalRecords > MAX_SNAPSHOT_RECORDS) throw new Error("crypto snapshot contains too many records");
       }
     }
     for (const recordName of Object.keys(db.records)) {

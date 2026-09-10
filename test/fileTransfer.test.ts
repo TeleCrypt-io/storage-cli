@@ -125,7 +125,7 @@ describe("bounded file transfer paths", () => {
 
     expect(failure).toMatchObject({
       name: "StorageError",
-      message: "safe file operations require Linux /proc/self/fd support",
+      message: "safe file operations require a file-descriptor filesystem",
     });
     expect((failure as Error).cause).toBe(openFailure);
   });
