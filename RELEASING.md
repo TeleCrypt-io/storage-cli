@@ -36,7 +36,13 @@ for the canonical development, acceptance, failure-handling, and production boun
    git push origin storage-cli-vX.Y.Z
    ```
 
-4. Before creating the tag, an operator with repository-administration access verifies that **immutable releases are enabled** and that the repository has one active ruleset targeting **all tags**, with no bypasses or exclusions, which forbids both tag updates and tag deletion. Record those two repository prerequisites in the Harness release evidence. The Actions token intentionally has no administration authority and does not attempt these settings queries. GitHub Actions then checks that the tag and manifest agree, runs `npm ci --ignore-scripts`, lint, unit tests, and build once, and packages the compiled output with bundled dependencies. Hosted Actions never runs Harness or functional acceptance scenarios; run those scenarios only from the local operator checkout against the disposable fixture.
+4. Before creating the tag, verify that the repository has one active ruleset targeting the
+   `storage-cli-v*` tags, with no bypasses or exclusions, which forbids both tag updates and tag
+   deletion. Record that repository prerequisite in the Harness release evidence. GitHub Actions
+   then checks that the tag and manifest agree, runs `npm ci --ignore-scripts`, lint, unit tests,
+   and build once, and packages the compiled output with bundled dependencies. Hosted Actions never
+   runs Harness or functional acceptance scenarios; run those scenarios only from the local
+   operator checkout against the disposable fixture.
    The archive validator also requires every bundled lockfile
    package to have an HTTPS `registry.npmjs.org` tarball URL matching its exact package/version,
    SHA-512 integrity, package metadata, and a direct license file.
