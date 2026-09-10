@@ -12,6 +12,7 @@ const REQUIRED_ROOT_FILES = [
 const REQUIRED_DIST_FILES = [
   "package/dist/cancellation.d.ts", "package/dist/cancellation.js",
   "package/dist/cryptoSnapshot.d.ts", "package/dist/cryptoSnapshot.js",
+  "package/dist/failure.d.ts", "package/dist/failure.js",
   "package/dist/fileTransfer.d.ts", "package/dist/fileTransfer.js",
   "package/dist/index.d.ts", "package/dist/index.js",
   "package/dist/limits.d.ts", "package/dist/limits.js",

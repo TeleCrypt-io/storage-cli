@@ -288,13 +288,13 @@ test("Release creation consumes one returned ID and rechecks that exact resource
   );
 });
 
-test("the release fixtures pin CLI 0.4.8 while retaining SDK 0.5.30", () => {
+test("the release fixtures pin CLI 0.4.9 while retaining SDK 0.5.30", () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(fs.readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
   const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.equal(packageJson.version, "0.4.8");
-  assert.equal(packageLock.version, "0.4.8");
-  assert.equal(packageLock.packages?.[""]?.version, "0.4.8");
+  assert.equal(packageJson.version, "0.4.9");
+  assert.equal(packageLock.version, "0.4.9");
+  assert.equal(packageLock.packages?.[""]?.version, "0.4.9");
   assert.equal(packageJson.dependencies?.["@telecrypt-io/storage"], "0.5.30");
   assert.equal(packageLock.packages?.["node_modules/@telecrypt-io/storage"]?.version, "0.5.30");
   assert.match(workflow, /SDK_REF: v0\.5\.30/u);

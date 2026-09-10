@@ -16,8 +16,8 @@ const root = [
   "package/THIRD-PARTY-LICENSES.txt", "package/package.json",
 ];
 const dist = [
-  "cancellation.d.ts", "cancellation.js", "cryptoSnapshot.d.ts", "cryptoSnapshot.js", "index.d.ts", "index.js",
-  "fileTransfer.d.ts", "fileTransfer.js", "limits.d.ts", "limits.js", "loginTransaction.d.ts", "loginTransaction.js", "logout.d.ts", "logout.js",
+  "cancellation.d.ts", "cancellation.js", "cryptoSnapshot.d.ts", "cryptoSnapshot.js", "failure.d.ts", "failure.js",
+  "fileTransfer.d.ts", "fileTransfer.js", "index.d.ts", "index.js", "limits.d.ts", "limits.js", "loginTransaction.d.ts", "loginTransaction.js", "logout.d.ts", "logout.js",
   "oidc.d.ts", "oidc.js", "output.d.ts", "output.js", "processExit.d.ts", "processExit.js", "profile.d.ts", "profile.js",
   "recoveryInput.d.ts", "recoveryInput.js", "storage.d.ts", "storage.js", "topology.d.ts", "topology.js",
 ].map((name) => `package/dist/${name}`);
