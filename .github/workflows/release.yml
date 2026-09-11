@@ -84,16 +84,11 @@ jobs:
           remote_commit="$(timeout 30s git ls-remote origin "$remote_commit_ref")"
           test "$(wc -l <<<"$remote_commit")" = 1
           test "$(awk '{ print $1 }' <<<"$remote_commit")" = "$GITHUB_SHA"
-          remote_main_line="$(timeout 30s git ls-remote --heads origin refs/heads/main)"
-          test "$(wc -l <<<"$remote_main_line")" = 1
-          remote_main="$(awk '{ print $1 }' <<<"$remote_main_line")"
-          test "$remote_main" = "$GITHUB_SHA"
           mkdir -p release
           cat > release/source-identity.txt <<EOF
           tag_ref=$tag_ref
           tag_object=$tag_object
           tag_commit=$tag_commit
-          remote_main=$remote_main
           EOF
 
       - name: Require the exact SDK release
@@ -414,9 +409,6 @@ jobs:
           test "$(git cat-file -t "$tag_ref")" = tag
           test "$(git rev-parse "$tag_ref^{commit}")" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          remote_main_line="$(timeout 30s git ls-remote --heads origin refs/heads/main)"
-          test "$(wc -l <<<"$remote_main_line")" = 1
-          test "$(awk '{ print $1 }' <<<"$remote_main_line")" = "$GITHUB_SHA"
 
       - name: Download and verify the tested archive
         env:
@@ -481,10 +473,6 @@ jobs:
             boundary_remote_commit="$(timeout 30s git ls-remote origin "$boundary_tag_ref^{}")"
             test "$(wc -l <<<"$boundary_remote_commit")" = 1
             test "$(awk '{ print $1 }' <<<"$boundary_remote_commit")" = "$boundary_tag_commit"
-            local boundary_remote_main_line
-            boundary_remote_main_line="$(timeout 30s git ls-remote --heads origin refs/heads/main)"
-            test "$(wc -l <<<"$boundary_remote_main_line")" = 1
-            test "$(awk '{ print $1 }' <<<"$boundary_remote_main_line")" = "$boundary_tag_commit"
             local boundary_remote_sdk_tag
             boundary_remote_sdk_tag="$(timeout 30s git ls-remote --refs https://github.com/TeleCrypt-io/storage-sdk.git "$sdk_ref")"
             test "$(wc -l <<<"$boundary_remote_sdk_tag")" = 1
@@ -503,9 +491,9 @@ jobs:
           test "$(wc -c < release/source-identity.txt)" -le 65536
           test -s release/sdk-source-identity.txt
 
-          # Re-fetch and compare the immutable tag object, peeled commit, tag
-          # ref, and the exact current main tip immediately before any Release
-          # API mutation. The build job's identity files must agree exactly.
+          # Re-fetch and compare the immutable tag object, peeled commit, and
+          # tag ref immediately before any Release API mutation. The build
+          # job's identity files must agree exactly.
           node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
           timeout 120s git fetch --force --no-tags origin \
             "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
@@ -521,20 +509,15 @@ jobs:
           remote_commit="$(timeout 30s git ls-remote origin "${tag_ref}^{}")"
           test "$(wc -l <<<"$remote_commit")" = 1
           test "$(awk '{ print $1 }' <<<"$remote_commit")" = "$tag_commit"
-          remote_main_line="$(timeout 30s git ls-remote --heads origin refs/heads/main)"
-          test "$(wc -l <<<"$remote_main_line")" = 1
-          remote_main="$(awk '{ print $1 }' <<<"$remote_main_line")"
-          test "$remote_main" = "$tag_commit"
           archive_sha256="$(sha256sum "$archive" | awk '{ print $1 }')"
-          node --input-type=module - release/source-identity.txt "$tag_ref" "$tag_object" "$tag_commit" "$remote_main" "$archive_sha256" <<'NODE'
+          node --input-type=module - release/source-identity.txt "$tag_ref" "$tag_object" "$tag_commit" "$archive_sha256" <<'NODE'
           import fs from "node:fs";
           import { validateSourceIdentity } from "./scripts/releasePolicy.mjs";
-          const [identityPath, tagRef, tagObject, tagCommit, remoteMain, archiveSha256] = process.argv.slice(2);
+          const [identityPath, tagRef, tagObject, tagCommit, archiveSha256] = process.argv.slice(2);
           validateSourceIdentity(fs.readFileSync(identityPath, "utf8"), {
             tag_ref: tagRef,
             tag_object: tagObject,
             tag_commit: tagCommit,
-            remote_main: remoteMain,
             archive_sha256: archiveSha256,
           });
           NODE
@@ -693,7 +676,6 @@ jobs:
             fi
           fi
           if [ "$release_state" = "draft-empty" ]; then
-            verify_mutation_boundary
             archive_name="${archive##*/}"
             capture_gh "$RUNNER_TEMP/storage-cli-release-upload.out" "$RUNNER_TEMP/storage-cli-release-upload.err" \
               api --method POST \

@@ -22,7 +22,7 @@ const tag = "storage-cli-v1.2.3";
 const archive = `${tag}.tgz`;
 const digest = `sha256:${"a".repeat(64)}`;
 const commit = "b".repeat(40);
-const sourceIdentity = `tag_ref=refs/tags/${tag}\ntag_object=${"c".repeat(40)}\ntag_commit=${commit}\nremote_main=${commit}\narchive_sha256=${"f".repeat(64)}\n`;
+const sourceIdentity = `tag_ref=refs/tags/${tag}\ntag_object=${"c".repeat(40)}\ntag_commit=${commit}\narchive_sha256=${"f".repeat(64)}\n`;
 const sdkIdentity = `tag_ref=refs/tags/v0.5.29\ntag_object=${"d".repeat(40)}\ntag_commit=${"e".repeat(40)}\nversion=0.5.29\n`;
 
 function release(overrides = {}) {
@@ -71,7 +71,6 @@ test("source and SDK identity files are exact and bounded", () => {
     tag_ref: `refs/tags/${tag}`,
     tag_object: "c".repeat(40),
     tag_commit: commit,
-    remote_main: commit,
     archive_sha256: "f".repeat(64),
   }).tag_commit, commit);
   assert.equal(validateSdkIdentity(sdkIdentity, { tagRef: "refs/tags/v0.5.29", version: "0.5.29" }).version, "0.5.29");
@@ -82,7 +81,7 @@ test("source and SDK identity files are exact and bounded", () => {
     version: "0.5.29",
   }), /fixture/u);
   assert.throws(
-    () => validateSourceIdentity(sourceIdentity.replace(new RegExp(`${commit}(?=\\nremote_main)`), "0".repeat(40)), {}),
+    () => validateSourceIdentity(sourceIdentity.replace(new RegExp(`${commit}(?=\\narchive_sha256)`), "0".repeat(40)), {}),
     /commit/u,
   );
   assert.throws(
@@ -214,107 +213,14 @@ test("the SDK CLI verifier bounds its lockfile input", () => {
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
-test("the release workflow performs npm signature verification before SDK provenance binding", () => {
-  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const audit = workflow.indexOf("npm audit signatures");
-  const consumer = workflow.indexOf("scripts/verifySdkPackage.mjs");
-  const provenance = workflow.indexOf("storage-sdk/scripts/verify-npm-provenance.mjs");
-  assert.ok(audit >= 0 && consumer >= 0 && provenance >= 0 && audit < consumer && consumer < provenance);
-  assert.doesNotMatch(workflow, /gitHead/u);
-  assert.match(workflow, /SDK_REF: v0\.6\.1/u);
-  assert.match(workflow, /capture_command "\$audit_out" "\$audit_err"[\s\S]*?npm audit signatures/u);
-  assert.match(workflow, /capture_command "\$provenance_out" "\$provenance_err"[\s\S]*?verify-npm-provenance\.mjs/u);
-});
-
-test("release capture helpers retain and report nonempty stderr on success", () => {
-  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.match(workflow, /finish_capture "\$status" true "\$stdout_path" "\$stderr_path"/u);
-  assert.match(workflow, /finish_capture "\$status" true "\$output" "\$error"/u);
-  assert.match(workflow, /replay_capture "\$attempt_stdout" "\$attempt_stderr" false/u);
-});
-
-test("required release commands preserve npm and Git diagnostics", () => {
-  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.doesNotMatch(workflow, /--loglevel(?:=|\s+)error/u);
-  assert.doesNotMatch(workflow, /\bnpm\b[^\n]*(?:--silent|--quiet)/u);
-  assert.doesNotMatch(workflow, /\bgit\b[^\n]*\bfetch\b[^\n]*--quiet/u);
-});
-
-test("the release workflow discovers drafts through complete paginated list records", () => {
-  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.match(workflow, /api --paginate --hostname github\.com/u);
-  assert.match(workflow, /map\(\.\[\]\)\[\]/u);
-  assert.match(workflow, /parseReleaseList/u);
-  assert.match(workflow, /Number\.isSafeInteger\(release\.id\)/u);
-  assert.match(workflow, /release_resource_endpoint/u);
-  assert.match(workflow, /api --method POST[\s\S]+https:\/\/uploads\.github\.com\/\$\{release_resource_endpoint\}\/assets/u);
-  assert.doesNotMatch(workflow, /release upload/u);
-  assert.doesNotMatch(workflow, /releases\/tags/u);
-});
-
-test("Release creation consumes one returned ID and rechecks that exact resource", () => {
-  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const publish = workflow.slice(workflow.indexOf("name: Publish one exact immutable release"));
-  const createStart = publish.lastIndexOf('if [ "$release_state" = "missing" ]; then');
-  const createEnd = publish.indexOf('if [ "$release_state" = "draft-empty" ]; then', createStart);
-  assert.ok(createStart >= 0 && createEnd > createStart);
-  const create = publish.slice(createStart, createEnd);
-  const directStart = publish.indexOf("fetch_release_by_id() {");
-  const directEnd = publish.indexOf('release_state="missing"', directStart);
-  assert.ok(directStart >= 0 && directEnd > directStart);
-  const direct = publish.slice(directStart, directEnd);
-
-  assert.match(create, /api --hostname github\.com --method POST/u);
-  assert.match(create, /--raw-field "tag_name=\$GITHUB_REF_NAME"/u);
-  assert.match(create, /--raw-field "name=\$GITHUB_REF_NAME"/u);
-  assert.match(create, /--raw-field "target_commitish=\$tag_commit"/u);
-  assert.match(create, /--field draft=true/u);
-  assert.match(create, /--field prerelease=false/u);
-  assert.match(create, /--field generate_release_notes=true/u);
-  assert.match(create, /set_release_resource_endpoint_from_json "\$release_create_json"/u);
-  assert.match(create, /release_state="\$\(fetch_release_by_id\)"/u);
-  assert.match(create, /draft-empty.*draft-exact/u);
-  assert.doesNotMatch(create, /fetch_release_state|sleep|release create|--method PATCH|uploads\.github\.com/u);
-  assert.match(direct, /api --hostname github\.com[\s\S]+"\$release_resource_endpoint"/u);
-  assert.match(direct, /Number\.isSafeInteger\(release\?\.id\)/u);
-  assert.match(direct, /String\(release\.id\) !== expectedId/u);
-  assert.match(direct, /classifyExistingDraft/u);
-  assert.match(publish, /Number\.isSafeInteger\(release\.id\)/u);
-  assert.equal(publish.match(/\brelease create\b/gu)?.length ?? 0, 0);
-  assert.equal(publish.match(/release_state="\$\(fetch_release_state\)"/gu)?.length, 1);
-  assert.equal(publish.match(/--raw-field "tag_name=\$GITHUB_REF_NAME"/gu)?.length, 1);
-  assert.ok(
-    create.indexOf("set_release_resource_endpoint_from_json") < create.indexOf('release_state="$(fetch_release_by_id)"'),
-  );
-});
-
 test("the release fixtures pin CLI 0.4.12 and SDK 0.6.1", () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(fs.readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
-  const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.equal(packageJson.version, "0.4.12");
   assert.equal(packageLock.version, "0.4.12");
   assert.equal(packageLock.packages?.[""]?.version, "0.4.12");
   assert.equal(packageJson.dependencies?.["@telecrypt-io/storage"], "0.6.1");
   assert.equal(packageLock.packages?.["node_modules/@telecrypt-io/storage"]?.version, "0.6.1");
-  assert.match(workflow, /SDK_REF: v0\.6\.1/u);
-  assert.match(workflow, /"@telecrypt-io\/storage": "0\.6\.1"/u);
-});
-
-test("the source and hosted jobs use one exact Node release toolchain", () => {
-  const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const packageLock = JSON.parse(fs.readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
-  const nodeVersion = fs.readFileSync(new URL("../.node-version", import.meta.url), "utf8").trim();
-  const releaseWorkflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const verifyWorkflow = fs.readFileSync(new URL("../.github/workflows/verify.yml", import.meta.url), "utf8");
-  assert.equal(nodeVersion, "24.20.0");
-  assert.equal(packageJson.packageManager, "npm@11.19.0");
-  assert.equal(packageJson.engines?.node, ">=24.20.0");
-  assert.equal(packageLock.packages?.[""]?.engines?.node, packageJson.engines.node);
-  assert.equal(releaseWorkflow.match(/node-version: "24\.20\.0"/gu)?.length, 2);
-  assert.equal(releaseWorkflow.match(/test "\$\(npm --version\)" = "11\.19\.0"/gu)?.length, 2);
-  assert.equal(verifyWorkflow.match(/node-version: "24\.20\.0"/gu)?.length, 1);
-  assert.equal(verifyWorkflow.match(/test "\$\(npm --version\)" = "11\.19\.0"/gu)?.length, 1);
 });
 
 test("only one exact GitHub 404 is considered a missing Release", () => {

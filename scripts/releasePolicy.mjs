@@ -28,11 +28,11 @@ function parseIdentity(text, keys) {
 }
 
 export function validateSourceIdentity(text, expected) {
-  const values = parseIdentity(text, ["tag_ref", "tag_object", "tag_commit", "remote_main", "archive_sha256"]);
+  const values = parseIdentity(text, ["tag_ref", "tag_object", "tag_commit", "archive_sha256"]);
   for (const key of Object.keys(expected)) {
     if (values[key] !== expected[key]) throw new Error(`source identity mismatch: ${key}`);
   }
-  for (const key of ["tag_object", "tag_commit", "remote_main"]) {
+  for (const key of ["tag_object", "tag_commit"]) {
     if (!COMMIT.test(values[key])) throw new Error(`source identity is not a full commit: ${key}`);
   }
   if (!SHA256.test(values.archive_sha256)) throw new Error("source identity archive hash is not a SHA-256 value");
