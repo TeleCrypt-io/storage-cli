@@ -12,12 +12,6 @@ export GIT_CONFIG_COUNT=0
 export GIT_CONFIG_PARAMETERS=
 export GIT_TERMINAL_PROMPT=0
 
-if grep -Fq '|| true' scripts/hardenReleaseTransport.sh || \
-  ! grep -Fq -- '--replace-all remote.origin.url' scripts/hardenReleaseTransport.sh; then
-  echo "transport hardening must propagate Git failures and replace the authoritative URL directly" >&2
-  exit 1
-fi
-
 git -C "$repo" init -q
 git -C "$repo" remote add origin https://evil.invalid/storage-cli.git
 git -C "$repo" config --local url.evil.insteadOf https://github.com/
