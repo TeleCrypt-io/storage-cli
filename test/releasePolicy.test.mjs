@@ -221,7 +221,7 @@ test("the release workflow performs npm signature verification before SDK proven
   const provenance = workflow.indexOf("storage-sdk/scripts/verify-npm-provenance.mjs");
   assert.ok(audit >= 0 && consumer >= 0 && provenance >= 0 && audit < consumer && consumer < provenance);
   assert.doesNotMatch(workflow, /gitHead/u);
-  assert.match(workflow, /SDK_REF: v0\.6\.0/u);
+  assert.match(workflow, /SDK_REF: v0\.6\.1/u);
   assert.match(workflow, /capture_command "\$audit_out" "\$audit_err"[\s\S]*?npm audit signatures/u);
   assert.match(workflow, /capture_command "\$provenance_out" "\$provenance_err"[\s\S]*?verify-npm-provenance\.mjs/u);
 });
@@ -288,17 +288,17 @@ test("Release creation consumes one returned ID and rechecks that exact resource
   );
 });
 
-test("the release fixtures pin CLI 0.4.11 and SDK 0.6.0", () => {
+test("the release fixtures pin CLI 0.4.12 and SDK 0.6.1", () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(fs.readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
   const workflow = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.equal(packageJson.version, "0.4.11");
-  assert.equal(packageLock.version, "0.4.11");
-  assert.equal(packageLock.packages?.[""]?.version, "0.4.11");
-  assert.equal(packageJson.dependencies?.["@telecrypt-io/storage"], "0.6.0");
-  assert.equal(packageLock.packages?.["node_modules/@telecrypt-io/storage"]?.version, "0.6.0");
-  assert.match(workflow, /SDK_REF: v0\.6\.0/u);
-  assert.match(workflow, /"@telecrypt-io\/storage": "0\.6\.0"/u);
+  assert.equal(packageJson.version, "0.4.12");
+  assert.equal(packageLock.version, "0.4.12");
+  assert.equal(packageLock.packages?.[""]?.version, "0.4.12");
+  assert.equal(packageJson.dependencies?.["@telecrypt-io/storage"], "0.6.1");
+  assert.equal(packageLock.packages?.["node_modules/@telecrypt-io/storage"]?.version, "0.6.1");
+  assert.match(workflow, /SDK_REF: v0\.6\.1/u);
+  assert.match(workflow, /"@telecrypt-io\/storage": "0\.6\.1"/u);
 });
 
 test("the source and hosted jobs use one exact Node release toolchain", () => {
