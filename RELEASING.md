@@ -1,72 +1,10 @@
-# Releasing `storage-cli`
+# Releasing
 
-`storage-cli` is distributed only as an immutable GitHub Release artifact. It is **not**
-published to the NPM registry and needs no NPM token, Trusted Publisher, or package settings.
+Update `package.json` and `package-lock.json`, then push an annotated
+`storage-cli-vX.Y.Z` tag for that commit. The workflow checks the tag and version, installs the
+locked dependencies, runs lint, unit tests, and the build, generates the bundled dependency notice,
+packages the CLI once, and attaches that archive to the GitHub Release.
 
-Each release contains:
-
-- `storage-cli-vX.Y.Z.tgz`: compiled CLI, bundled lockfile-resolved production dependencies, and
-  the generated `THIRD-PARTY-LICENSES.txt` inventory with each bundled package's license file.
-
-The release workflow does not generate a provenance attestation. Release integrity is established
-by the immutable annotated tag, the exact tested archive digest, and the immutable Release asset
-checks described below.
-
-The archive can be installed directly with the standard Node installer:
-
-```sh
-npm install -g --ignore-scripts https://github.com/TeleCrypt-io/storage-cli/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
-```
-
-The package bundles its runtime dependencies, including the exact storage-library version. The
-installer therefore does not need to resolve packages from the NPM registry. The supported runtime
-is Linux with Node.js `>=24.20.0`; release verification uses that exact pinned Node.js version and the bundled npm `11.19.0`.
-
-This document covers CLI publication only. Follow the private [Harness operator workflow](https://github.com/TeleCrypt-io/Harness/blob/main/docs/release.md#required-stage-first-sequence)
-for the canonical development, acceptance, failure-handling, and production boundaries.
-
-## Release flow
-
-1. Set the exact semver version in `package.json` and commit it.
-2. Verify `main` through the ordinary GitHub Actions workflow.
-3. Create and push a fresh annotated tag whose version exactly matches the manifest:
-
-   ```sh
-   git tag -a storage-cli-vX.Y.Z -m "Release storage-cli-vX.Y.Z"
-   git push origin storage-cli-vX.Y.Z
-   ```
-
-4. Before creating the tag, verify that the repository has one active ruleset targeting the
-   `storage-cli-v*` tags, with no bypasses or exclusions, which forbids both tag updates and tag
-   deletion. Record that repository prerequisite in the Harness release evidence. GitHub Actions
-   then checks that the tag and manifest agree, runs `npm ci --ignore-scripts`, lint, unit tests,
-   and build once, and packages the compiled output with bundled dependencies. Hosted Actions never
-   runs Harness or functional acceptance scenarios; run those scenarios only from the local
-   operator checkout against the disposable fixture.
-   The archive validator also requires every bundled lockfile
-   package to have an HTTPS `registry.npmjs.org` tarball URL matching its exact package/version,
-   SHA-512 integrity, package metadata, and a direct license file.
-   For the SDK specifically, the consumer release gate also downloads the exact registry tarball
-   selected by the lockfile, recomputes its SHA-512 bytes, runs `npm audit signatures`, and invokes
-   the exact SDK release's bounded npm/SLSA provenance verifier. That verifier binds the package,
-   archive, workflow tag, hosted builder, and resolved SDK commit; the legacy npm `gitHead` field is
-   not a release authority.
-5. Only after all checks pass, the publish job downloads the tested archive and its identity files.
-   Before changing a Release, it verifies the annotated source tag and commit, the source identity,
-   the archive digest, and the recorded SDK tag and commit. These immutable inputs are checked once
-   in the publish job. Existing-draft discovery uses one complete paginated Release-list read. When
-   no Release exists,
-   the workflow creates one exact draft through the Releases API, validates the returned numeric
-   Release ID, and constructs the resource endpoint from that ID. It then performs a direct
-   read of that exact resource and proceeds only when the exact empty or exact one-asset draft is
-   classified successfully. A failed, ambiguous, mismatched, published, altered, or ID-mismatched
-   state fails closed; the create mutation is never repeated and the catalog is not polled after
-   creation. It then uploads the archive and verifies the draft's one asset and digest. A rerun may
-   reuse only that same exact draft and asset; an existing published, prerelease, mismatched, or
-   altered Release is rejected. The workflow then publishes the verified draft and checks the
-   non-draft, non-prerelease immutable Release and its one archive asset against the tested bytes.
-   The archive's extracted license inventory must also match the lockfile-derived inventory byte for
-   byte.
-
-Never replace, delete, or rebuild a release archive. A correction requires a new source commit,
-new semver version, and a fresh annotated `storage-cli-v*` tag.
+Harness acceptance downloads that archive and checks its GitHub Release digest before running the
+CLI against Stage. A failed release run should be inspected before retrying; published Releases are
+immutable, so corrections use a new version and tag.

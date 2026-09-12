@@ -2,8 +2,6 @@ import { StorageError } from "@telecrypt-io/storage/core";
 import { runWithAbortRace } from "./cancellation.js";
 import { attemptCleanup } from "./failure.js";
 
-export const MAX_RECOVERY_KEY_BYTES = 16 * 1024;
-
 function promptOutput(value: string): void {
   process.stderr.write(value);
 }
@@ -11,10 +9,7 @@ function promptOutput(value: string): void {
 export function requireRecoveryKey(value: string): string {
   const recoveryKey = value.replace(/[\r\n]+$/u, "");
   if (!recoveryKey) throw new StorageError("recovery key was empty");
-  if (
-    Buffer.byteLength(recoveryKey, "utf8") > MAX_RECOVERY_KEY_BYTES ||
-    /[\u0000-\u001f\u007f-\u009f]/u.test(recoveryKey)
-  ) {
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(recoveryKey)) {
     throw new StorageError("recovery key contains unsupported characters");
   }
   return recoveryKey;
@@ -44,13 +39,9 @@ export async function readRecoveryKeyFromStdin(
   signal.addEventListener("abort", onAbort, { once: true });
   const reading = (async (): Promise<string> => {
     const chunks: Buffer[] = [];
-    let length = 0;
     for await (const chunk of stdin) {
       if (signal.aborted) throw interrupted;
-      const data = Buffer.from(chunk);
-      length += data.length;
-      if (length > MAX_RECOVERY_KEY_BYTES) throw new StorageError("recovery key input is unexpectedly large");
-      chunks.push(data);
+      chunks.push(Buffer.from(chunk));
     }
     if (signal.aborted) throw interrupted;
     return requireRecoveryKey(Buffer.concat(chunks).toString("utf8"));
@@ -86,7 +77,6 @@ export async function promptForRecoveryKey(
   return new Promise((resolve, reject) => {
     const wasRaw = stdin.isRaw;
     const chars: string[] = [];
-    let byteLength = 0;
     let rawModeEnabled = false;
     let settled = false;
 
@@ -143,14 +133,8 @@ export async function promptForRecoveryKey(
           return;
         }
         if (char === "\b" || char === "\u007f") {
-          const removed = chars.pop();
-          if (removed) byteLength -= Buffer.byteLength(removed, "utf8");
+          chars.pop();
           continue;
-        }
-        byteLength += Buffer.byteLength(char, "utf8");
-        if (byteLength > MAX_RECOVERY_KEY_BYTES) {
-          finish(new StorageError("recovery key input is unexpectedly large"));
-          return;
         }
         chars.push(char);
       }

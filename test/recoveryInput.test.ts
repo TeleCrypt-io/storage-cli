@@ -8,11 +8,9 @@ class FakeTty extends EventEmitter {
   paused = false;
   resumed = false;
   emitOnResume?: "data" | "end" | "close";
-  throwOnRestore = false;
   throwOnPause = false;
 
   setRawMode(raw: boolean): this {
-    if (!raw && this.throwOnRestore) throw new Error("raw mode restore failed");
     this.isRaw = raw;
     return this;
   }
@@ -71,33 +69,21 @@ describe("hidden recovery-key prompt input", () => {
     expect(stdin.listenerCount("close")).toBe(0);
   });
 
-  it("preserves input and every prompt cleanup failure", async () => {
+  it("reports a prompt cleanup failure after restoring raw mode", async () => {
     const stdin = new FakeTty();
-    stdin.throwOnRestore = true;
     stdin.throwOnPause = true;
-    let writes = 0;
     const pending = promptForRecoveryKey(
       new AbortController().signal,
       stdin as unknown as NodeJS.ReadStream,
-      (_value) => {
-        writes += 1;
-        if (writes > 1) throw new Error("prompt output failed");
-      },
+      () => {},
     );
     stdin.emit("data", "recovery-key\n");
 
-    let failure: unknown;
-    try {
-      await pending;
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as AggregateError).errors.map(String)).toEqual([
-      "Error: raw mode restore failed",
-      "Error: stdin pause failed",
-      "Error: prompt output failed",
-    ]);
+    await expect(pending).rejects.toThrow("stdin pause failed");
+    expect(stdin.isRaw).toBe(false);
+    expect(stdin.listenerCount("data")).toBe(0);
+    expect(stdin.listenerCount("end")).toBe(0);
+    expect(stdin.listenerCount("close")).toBe(0);
   });
 });
 

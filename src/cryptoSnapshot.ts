@@ -289,7 +289,6 @@ export async function importIndexedDB(snapshot: CryptoSnapshot, signal?: AbortSi
   const idb = getIndexedDB();
 
   throwIfSnapshotAborted(signal);
-  validateSnapshot(snapshot);
 
   for (const dbSnap of snapshot.dbs) {
     throwIfSnapshotAborted(signal);
@@ -368,21 +367,19 @@ export async function importIndexedDB(snapshot: CryptoSnapshot, signal?: AbortSi
 }
 
 export function loadSnapshotFromDisk(path: string, heldLock?: ProfileLock): CryptoSnapshot | null {
-  const buf = readPrivateFile(path, undefined, heldLock);
+  const buf = readPrivateFile(path, heldLock);
   if (!buf) return null;
   if (buf.length === 0) return null;
-  let snapshot: unknown;
+  let snapshot: CryptoSnapshot;
   try {
-    snapshot = v8.deserialize(buf);
+    snapshot = v8.deserialize(buf) as CryptoSnapshot;
   } catch (error) {
     throw withCause(new Error("crypto snapshot is unreadable; remove it and retry"), error);
   }
-  validateSnapshot(snapshot);
   return snapshot;
 }
 
 export function saveSnapshotToDisk(path: string, snapshot: CryptoSnapshot, heldLock?: ProfileLock): void {
-  validateSnapshot(snapshot);
   const serialized = v8.serialize(snapshot);
   writePrivateFile(path, serialized, heldLock);
 }
@@ -409,91 +406,4 @@ export async function persistCryptoStore(
   const snapshot = await exportIndexedDB(signal);
   throwIfSnapshotAborted(signal);
   saveSnapshotToDisk(path, snapshot, heldLock);
-}
-
-function validateSnapshot(value: unknown): asserts value is CryptoSnapshot {
-  if (!value || typeof value !== "object" || !Array.isArray((value as { dbs?: unknown }).dbs)) {
-    throw new Error("crypto snapshot has an invalid shape");
-  }
-  const dbs = (value as CryptoSnapshot).dbs;
-  const databaseNames = new Set<string>();
-  const validName = (name: unknown, kind: string): name is string => {
-    if (
-      typeof name !== "string" ||
-      name.length === 0 ||
-      /[\u0000-\u001f\u007f-\u009f]/u.test(name)
-    ) {
-      throw new Error(`crypto snapshot ${kind} name is invalid`);
-    }
-    return true;
-  };
-  const validKeyPath = (keyPath: unknown): keyPath is string | string[] | null => {
-    if (keyPath === null) return true;
-    const parts = typeof keyPath === "string" ? [keyPath] : keyPath;
-    if (!Array.isArray(parts) || parts.length === 0) return false;
-    return parts.every(
-      (part) =>
-        typeof part === "string" &&
-        part.length > 0 &&
-        !/[\u0000-\u001f\u007f-\u009f]/u.test(part),
-    );
-  };
-  for (const db of dbs) {
-    if (!db || !validName(db.name, "database") || !db.name.startsWith(TELECRYPT_CRYPTO_DATABASE_PREFIX)) {
-      throw new Error("crypto snapshot contains an invalid database");
-    }
-    if (databaseNames.has(db.name)) throw new Error("crypto snapshot contains duplicate databases");
-    databaseNames.add(db.name);
-    if (!Number.isSafeInteger(db.version) || db.version < 1 || !Array.isArray(db.stores)) {
-      throw new Error("crypto snapshot contains invalid database metadata");
-    }
-    if (!db.records || typeof db.records !== "object" || Array.isArray(db.records)) {
-      throw new Error("crypto snapshot contains invalid records");
-    }
-    const storeNames = new Set<string>();
-    for (const store of db.stores) {
-      if (
-        !store ||
-        !validName(store.name, "store") ||
-        storeNames.has(store.name) ||
-        !validKeyPath(store.keyPath) ||
-        typeof store.autoIncrement !== "boolean" ||
-        !Array.isArray(store.indexes) ||
-        !Object.prototype.hasOwnProperty.call(db.records, store.name) ||
-        !Array.isArray(db.records[store.name])
-      ) {
-        throw new Error("crypto snapshot contains invalid store metadata");
-      }
-      storeNames.add(store.name);
-      const indexNames = new Set<string>();
-      for (const index of store.indexes) {
-        if (
-          !index ||
-          !validName(index.name, "index") ||
-          indexNames.has(index.name) ||
-          !validKeyPath(index.keyPath) ||
-          index.keyPath === null ||
-          typeof index.unique !== "boolean" ||
-          typeof index.multiEntry !== "boolean"
-        ) {
-          throw new Error("crypto snapshot index metadata is invalid");
-        }
-        indexNames.add(index.name);
-      }
-      for (const record of db.records[store.name]) {
-        if (!record || typeof record !== "object" || !Object.prototype.hasOwnProperty.call(record, "value")) {
-          throw new Error("crypto snapshot contains an invalid record");
-        }
-        const hasKey = Object.prototype.hasOwnProperty.call(record, "key");
-        if ((store.keyPath === null) !== hasKey) {
-          throw new Error("crypto snapshot record key does not match its store key path");
-        }
-      }
-    }
-    for (const recordName of Object.keys(db.records)) {
-      if (!storeNames.has(recordName)) {
-        throw new Error("crypto snapshot contains records for an undeclared store");
-      }
-    }
-  }
 }

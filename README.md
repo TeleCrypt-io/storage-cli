@@ -24,7 +24,7 @@ npm install -g --ignore-scripts https://github.com/TeleCrypt-io/storage-cli/rele
 
 Replace `X.Y.Z` with an existing release version. `npm` is used only as the Node installer: the
 archive and its bundled runtime dependencies are fetched from GitHub, not from the NPM registry.
-This installs the `telecrypt-io` executable. Existing download paths are never overwritten. The library source is in
+This installs the `telecrypt-io` executable. The library source is in
 [`TeleCrypt-io/storage-sdk`](https://github.com/TeleCrypt-io/storage-sdk).
 
 ## Usage
@@ -48,13 +48,11 @@ boundaries do not replace that real-stack coverage. The same Podman fixture is s
 and Web e2e suites. Hosted Actions never runs these scenarios and they never target a production
 server.
 
-If setup or tests fail, preserve the shared fixture and its diagnostics; do not tear it down before
-the private Harness investigation is complete. The fixture scripts do not provide that workflow;
-follow the [Harness operator workflow](https://github.com/TeleCrypt-io/Harness/blob/main/docs/release.md#required-stage-first-sequence)
-for the canonical ordering and stopping boundary.
+If setup or tests fail, inspect the relevant logs, then stop the fixture with the SDK checkout's
+`npm run synapse:down` command when finished.
 
 See [CLI.md](./CLI.md) for the full command reference and [RELEASING.md](./RELEASING.md) for the
-guarded GitHub Release procedure.
+GitHub Release procedure.
 
 ## Licence
 
@@ -66,6 +64,6 @@ For commercial licensing, contact TeleCrypt.io.
 ## Third-party notices
 
 The CLI bundles exact runtime dependencies. Each release archive includes a generated
-`THIRD-PARTY-LICENSES.txt` inventory from the lockfile and verifies that every bundled package
-contributes its own license file; use the copy inside the archive as the authoritative dependency
-notice.
+`THIRD-PARTY-LICENSES.txt` inventory from the lockfile. Before packing, the release workflow checks
+that each bundled package has one license file in the installed dependencies; use the copy inside
+the archive as the authoritative dependency notice.

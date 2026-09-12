@@ -1,11 +1,7 @@
 import type { Command } from "commander";
+import { sanitizeDiagnosticText } from "@telecrypt-io/storage/core";
 import { cancellationExitCode, commandSignal } from "./cancellation.js";
 
-const DIAGNOSTIC_SECRET_FIELD = /^(?:access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?id|client[_-]?secret|user[_-]?id|device[_-]?id|authorization(?:[_-]?code)?|device[_-]?code|user[_-]?code|code[_-]?verifier|token|credential[s]?|private[_-]?key|(?:[A-Za-z0-9]+[_-])?(?:encryption|signing|password|secret|api[_-]?key|recovery[_-]?key|cookie|session)(?:[_-]?token|[_-]?key)?)$/iu;
-const DIAGNOSTIC_QUOTED_VALUE = `"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|[^\\s,};\\]]+`;
-const DIAGNOSTIC_EMAIL = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+/giu;
-const DIAGNOSTIC_MXID = /@[A-Z0-9._=+\-/]+:[A-Z0-9.-]+/giu;
-const DIAGNOSTIC_ULID = /\b[0-9A-HJKMNP-TV-Z]{26}\b/giu;
 
 export interface CommandResult {
   /** Machine-readable payload for --json. */
@@ -42,219 +38,35 @@ function writeLine(stream: NodeJS.WriteStream, line: string): Promise<void> {
   });
 }
 
-interface PendingDiagnostic {
-  value: unknown;
-  label: string;
-}
+function rawErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
 
-interface DiagnosticProperty {
-  key: PropertyKey;
-  value: unknown;
-}
-
-function isDiagnosticReference(value: unknown): value is object {
-  return value !== null && (typeof value === "object" || typeof value === "function");
-}
-
-function diagnosticKey(key: PropertyKey): string {
-  return String(key);
-}
-
-function diagnosticDisplayKey(key: PropertyKey): string {
-  return safeOutputField(diagnosticKey(key)) || "<empty property>";
-}
-
-function diagnosticPropertyIsSecret(key: PropertyKey): boolean {
-  return DIAGNOSTIC_SECRET_FIELD.test(diagnosticKey(key));
-}
-
-function readDiagnosticProperties(
-  value: object,
-  seen: WeakSet<object>,
-): { properties: DiagnosticProperty[]; failures: string[] } {
-  const properties: DiagnosticProperty[] = [];
-  const failures: string[] = [];
-  let keys: PropertyKey[];
-  try {
-    keys = Reflect.ownKeys(value);
-  } catch (error) {
-    failures.push(`own properties unavailable: ${safePropertyFailure(error, seen)}`);
-    return { properties, failures };
+  const name = error.name || "Error";
+  const message = error.message || "unknown failure";
+  const stack = typeof error.stack === "string" && error.stack !== `${name}: ${message}`
+    ? `; stack: ${error.stack}`
+    : "";
+  const parts = [`${name}: ${message}${stack}`];
+  const details = error as Error & { code?: unknown; errcode?: unknown; status?: unknown; statusCode?: unknown; treeId?: unknown };
+  for (const key of ["code", "errcode", "status", "statusCode", "treeId"] as const) {
+    const value = details[key];
+    if (typeof value === "string" || typeof value === "number") parts.push(`${key}: ${value}`);
   }
-  for (const key of keys) {
-    let descriptor: PropertyDescriptor | undefined;
-    try {
-      descriptor = Object.getOwnPropertyDescriptor(value, key);
-    } catch (error) {
-      failures.push(
-        `${diagnosticDisplayKey(key)} unavailable: ${diagnosticPropertyIsSecret(key) ? "<redacted>" : safePropertyFailure(error, seen)}`,
-      );
-      continue;
-    }
-    if (!descriptor) continue;
-    try {
-      if ("value" in descriptor) {
-        properties.push({ key, value: descriptor.value });
-      } else if (typeof descriptor.get === "function") {
-        properties.push({ key, value: Reflect.get(value, key) });
-      } else {
-        failures.push(
-        `${diagnosticDisplayKey(key)} unavailable: ${diagnosticPropertyIsSecret(key) ? "<redacted>" : "accessor has no getter"}`,
-        );
-      }
-    } catch (error) {
-      failures.push(
-        `${diagnosticDisplayKey(key)} unavailable: ${diagnosticPropertyIsSecret(key) ? "<redacted>" : safePropertyFailure(error, seen)}`,
-      );
-    }
-  }
-  return { properties, failures };
-}
-
-function safePropertyFailure(error: unknown, seen: WeakSet<object>): string {
-  if (isDiagnosticReference(error)) {
-    try {
-      return rawErrorMessage(error, seen);
-    } catch {
-      return "unknown property failure";
-    }
-  }
-  try {
-    return String(error);
-  } catch {
-    return "unknown property failure";
-  }
-}
-
-function formatterFailure(error: unknown, seen?: WeakSet<object>): string {
-  if (seen && isDiagnosticReference(error) && seen.has(error)) return "[cyclic diagnostic formatter failure]";
-  try {
-    const detail = rawErrorMessage(error);
-    return detail || "unknown diagnostic formatter failure";
-  } catch {
-    return "unknown diagnostic formatter failure";
-  }
-}
-
-function appendDiagnosticProperties(
-  pending: PendingDiagnostic[],
-  label: string,
-  inspection: { properties: DiagnosticProperty[]; failures: string[] },
-  skip: ReadonlySet<PropertyKey>,
-): void {
-  const { properties, failures } = inspection;
-  for (let index = properties.length - 1; index >= 0; index -= 1) {
-    const property = properties[index]!;
-    if (skip.has(property.key)) continue;
-    const key = diagnosticDisplayKey(property.key);
-    pending.push({
-      value: diagnosticPropertyIsSecret(property.key) ? "<redacted>" : property.value,
-      label: `${label}${key}: `,
+  if (error.cause !== undefined) parts.push(`cause: ${rawErrorMessage(error.cause)}`);
+  if (error instanceof AggregateError) {
+    error.errors.forEach((child, index) => {
+      parts.push(`aggregate child ${index}: ${rawErrorMessage(child)}`);
     });
   }
-  for (let index = failures.length - 1; index >= 0; index -= 1) {
-    pending.push({ value: failures[index], label: `${label}` });
-  }
+  return parts.join("; ");
 }
 
-function rawErrorMessage(error: unknown, seen = new WeakSet<object>()): string {
-  const messages: string[] = [];
-  const pending: PendingDiagnostic[] = [{ value: error, label: "" }];
-  while (pending.length > 0) {
-    const { value: current, label } = pending.pop()!;
-    if (isDiagnosticReference(current)) {
-      if (seen.has(current)) {
-        messages.push(`${label}[cyclic diagnostic]`);
-        continue;
-      }
-      seen.add(current);
-    } else {
-      try {
-        messages.push(`${label}${String(current)}`);
-      } catch {
-        messages.push(`${label}unknown diagnostic value`);
-      }
-      continue;
-    }
-    try {
-      if (current instanceof Error) {
-        const name = current.name || "Error";
-        const message = current.message || "unknown failure";
-        const stack = typeof current.stack === "string" ? current.stack : "";
-        const stackSuffix = stack !== "" && stack !== `${name}: ${message}` ? `; stack: ${stack}` : "";
-        messages.push(`${label}${name}: ${message}${stackSuffix}`);
-        const skip = new Set<PropertyKey>(["name", "message", "stack", "cause"]);
-        if (current instanceof AggregateError) skip.add("errors");
-        const nested: PendingDiagnostic[] = [];
-        let cause: unknown;
-        try {
-          cause = current.cause;
-        } catch (causeError) {
-          messages.push(`${label}cause unavailable: ${formatterFailure(causeError, seen)}`);
-        }
-        if (cause !== undefined) nested.push({ value: cause, label: `${label}cause: ` });
-        if (current instanceof AggregateError) {
-          let children: unknown;
-          try {
-            children = current.errors;
-          } catch (childrenError) {
-            messages.push(`${label}aggregate children unavailable: ${formatterFailure(childrenError, seen)}`);
-            continue;
-          }
-          if (Array.isArray(children)) {
-            for (let index = children.length - 1; index >= 0; index -= 1) {
-              nested.push({ value: children[index], label: `${label}aggregate child ${index}: ` });
-            }
-          } else {
-            messages.push(`${label}aggregate children: [invalid]`);
-          }
-        }
-        appendDiagnosticProperties(nested, label, readDiagnosticProperties(current, seen), skip);
-        for (let index = nested.length - 1; index >= 0; index -= 1) pending.push(nested[index]!);
-      } else {
-        const inspection = readDiagnosticProperties(current, seen);
-        if (inspection.properties.length === 0 && inspection.failures.length === 0) {
-          messages.push(`${label}${isDiagnosticReference(current) ? "object { }" : String(current)}`);
-        } else {
-          messages.push(`${label}object`);
-          const nested: PendingDiagnostic[] = [];
-          appendDiagnosticProperties(nested, label, inspection, new Set<PropertyKey>());
-          for (let index = nested.length - 1; index >= 0; index -= 1) pending.push(nested[index]!);
-        }
-      }
-    } catch (formatError) {
-      messages.push(`${label}diagnostic formatting failed: ${formatterFailure(formatError, seen)}`);
-    }
-  }
-  return messages.join("; ");
-}
-
-export function safeDiagnosticText(value: string): string {
-  return value
-    .replace(/(Bearer\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"',}]+)/giu, "$1<redacted>")
-    .replace(
-      new RegExp(`(["'])([^"']+)\\1(\\s*[:=]\\s*)(${DIAGNOSTIC_QUOTED_VALUE})`, "giu"),
-      (whole, quote: string, key: string, separator: string) =>
-        DIAGNOSTIC_SECRET_FIELD.test(key.replace(/\\(["'])/gu, "$1"))
-          ? `${quote}${key}${quote}${separator}"<redacted>"`
-          : whole,
-    )
-    .replace(
-      new RegExp(`\\b([A-Za-z][A-Za-z0-9_-]*)\\b(\\s*[:=]\\s*)(${DIAGNOSTIC_QUOTED_VALUE})`, "giu"),
-      (whole, key: string, separator: string) =>
-        DIAGNOSTIC_SECRET_FIELD.test(key) ? `${key}${separator}"<redacted>"` : whole,
-    )
-    .replace(DIAGNOSTIC_EMAIL, "<redacted>")
-    .replace(DIAGNOSTIC_MXID, "<redacted>")
-    .replace(DIAGNOSTIC_ULID, "<redacted>")
-    .replace(/[\r\n\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, " ")
-    .trim();
-}
+export { sanitizeDiagnosticText as safeDiagnosticText };
 
 export function safeErrorMessage(error: unknown): string {
   const rawMessage = rawErrorMessage(error);
   const message = rawMessage.replace(/\\(["'])/gu, "$1");
-  return safeDiagnosticText(message);
+  return sanitizeDiagnosticText(message);
 }
 
 /**
@@ -275,8 +87,7 @@ export async function runAction(
   try {
     const result = await fn(commandSignal);
     const rendered = json ? JSON.stringify(result.json) : result.text;
-    const safeRendered = rendered.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028\u2029]/gu, "?");
-    await writeLine(process.stdout, safeRendered);
+    await writeLine(process.stdout, rendered);
     process.exitCode = cancellationExitCode() ?? 0;
   } catch (err) {
     const message = safeErrorMessage(err);

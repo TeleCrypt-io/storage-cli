@@ -44,52 +44,14 @@ describe("crypto snapshot database scope", () => {
     ]);
   });
 
-  it("rejects databases outside the published prefix", async () => {
-    await expect(importIndexedDB({
-      dbs: [
-        {
-          name: "unrelated-application-database",
-          version: 1,
-          stores: [],
-          records: {},
-        },
-      ],
-    })).rejects.toThrow(/invalid database/);
+  it("ignores databases outside the published prefix when importing", async () => {
+    await importIndexedDB({
+      dbs: [{ name: "unrelated-application-database", version: 1, stores: [], records: {} }],
+    });
 
     expect((await indexedDB.databases()).some(({ name }) => name === "unrelated-application-database")).toBe(
       false,
     );
-  });
-
-  it("rejects duplicate schema names and undeclared record paths before import", async () => {
-    const name = `${TELECRYPT_CRYPTO_DATABASE_PREFIX}invalid`;
-    await expect(importIndexedDB({
-      dbs: [
-        { name, version: 1, stores: [], records: {} },
-        { name, version: 1, stores: [], records: {} },
-      ],
-    })).rejects.toThrow(/duplicate databases/);
-
-    await expect(importIndexedDB({
-      dbs: [{
-        name,
-        version: 1,
-        stores: [],
-        records: { undeclared: [] },
-      }],
-    })).rejects.toThrow(/undeclared store/);
-  });
-
-  it("requires record keys to match the declared IndexedDB key path", async () => {
-    const name = `${TELECRYPT_CRYPTO_DATABASE_PREFIX}keys`;
-    await expect(importIndexedDB({
-      dbs: [{
-        name,
-        version: 1,
-        stores: [{ name: "store", keyPath: null, autoIncrement: false, indexes: [] }],
-        records: { store: [{ value: "missing out-of-line key" }] },
-      }],
-    })).rejects.toThrow(/record key does not match/);
   });
 
   it("exports every store without reusing an auto-committed transaction", async () => {

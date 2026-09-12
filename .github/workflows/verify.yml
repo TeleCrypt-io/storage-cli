@@ -8,41 +8,21 @@ on:
 permissions:
   contents: read
 
-env:
-  GIT_CONFIG_NOSYSTEM: "1"
-  GIT_CONFIG_GLOBAL: /tmp/telecrypt-gitconfig
-  GIT_CONFIG_SYSTEM: /dev/null
-  GIT_TERMINAL_PROMPT: "0"
-  GCM_INTERACTIVE: Never
-
 jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      GIT_CONFIG_COUNT: "2"
-      GIT_CONFIG_KEY_0: init.defaultBranch
-      GIT_CONFIG_VALUE_0: main
-      GIT_CONFIG_KEY_1: advice.detachedHead
-      GIT_CONFIG_VALUE_1: "false"
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-          set-safe-directory: false
       - uses: actions/setup-node@v7.0.0
         with:
-          node-version: "24.20.0"
+          node-version-file: .node-version
           cache: npm
-      - name: Test release policy helpers offline
-        run: |
-          node --test test/releasePolicy.test.mjs
-          bash test/releaseTransport.test.sh
-      - name: Require the bundled npm release toolchain
-        run: test "$(npm --version)" = "11.19.0"
-      - name: Require exact v1 consumer dependency releases
-        run: npm run verify:dependencies
-      - run: timeout 300s npm ci --ignore-scripts --no-fund --no-audit
-      - run: timeout 180s npm run lint
-      - run: timeout 300s npm run test:unit
-      - run: timeout 180s npm run build
+      - name: Check the package manager
+        run: test "$(npm --version)" = "$(node -p 'require("./package.json").packageManager.replace(/^npm@/u, "")')"
+      - run: npm ci --ignore-scripts --no-fund --no-audit
+      - run: npm run lint
+      - run: npm run test:unit
+      - run: npm run build

@@ -39,28 +39,8 @@ export class OidcLoginError extends StorageError {
   }
 }
 
-const MAX_OIDC_URL_LENGTH = 2048;
-const MAX_USER_CODE_LENGTH = 256;
 const OIDC_REQUEST_TIMEOUT_MS = 30_000;
 const OIDC_APPROVAL_TIMEOUT_MS = 5 * 60_000;
-const SAFE_DEVICE_ERROR_CODES = new Set([
-  "access_denied",
-  "authorization_pending",
-  "expired",
-  "expired_token",
-  "invalid_client",
-  "invalid_grant",
-  "invalid_request",
-  "invalid_scope",
-  "invalid_token",
-  "server_error",
-  "slow_down",
-  "temporarily_unavailable",
-  "unauthorized_client",
-  "unsupported_grant_type",
-]);
-const MAX_OIDC_VALUE_BYTES = 16 * 1024;
-
 // The Matrix OIDC discovery client touches browser storage even in Node. Keep
 // this shim scoped to discovery: a permanent global window breaks the SDK's
 // Node crypto/runtime feature detection. The abort listener removes it even
@@ -93,58 +73,26 @@ class OidcMemoryStorage implements Storage {
   }
 }
 
-interface OidcWindowShimOwner {
-  value: unknown;
-  owners: number;
-}
-
-// Discovery can run concurrently (for example, two test or orchestration
-// invocations sharing one process). Keep the temporary shim alive until the
-// last owner releases it; a simple hadWindow check lets the first completion
-// delete a shim still in use by another invocation.
-let activeOidcWindowShim: OidcWindowShimOwner | undefined;
-
 async function withOidcWindowStorage<T>(
   operation: () => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
   const globalObject = globalThis as unknown as Record<string, unknown>;
   const hadWindow = Object.prototype.hasOwnProperty.call(globalObject, "window");
-  let owner: OidcWindowShimOwner | undefined;
-  let restored = false;
-  const restore = (): void => {
-    if (restored) return;
-    restored = true;
-    signal?.removeEventListener("abort", restore);
-    if (!owner) return;
-    owner.owners -= 1;
-    if (owner.owners > 0) return;
-    if (activeOidcWindowShim === owner) activeOidcWindowShim = undefined;
-    // Remove only the shim this invocation owns; do not overwrite a replacement
-    // installed by another owner while discovery is still pending.
-    if (globalObject.window === owner.value) delete globalObject.window;
-  };
-  if (activeOidcWindowShim && globalObject.window === activeOidcWindowShim.value) {
-    owner = activeOidcWindowShim;
-    owner.owners += 1;
-  } else if (!hadWindow) {
-    owner = {
-      value: {
-        sessionStorage: new OidcMemoryStorage(),
-        localStorage: new OidcMemoryStorage(),
-      },
-      owners: 1,
+  if (!hadWindow) {
+    globalObject.window = {
+      sessionStorage: new OidcMemoryStorage(),
+      localStorage: new OidcMemoryStorage(),
     };
-    activeOidcWindowShim = owner;
-    globalObject.window = owner.value;
   }
+  const restore = (): void => {
+    signal?.removeEventListener("abort", restore);
+    if (!hadWindow) delete globalObject.window;
+  };
   signal?.addEventListener("abort", restore, { once: true });
   try {
     return await operation();
   } finally {
-    // An existing non-shim window belongs to its caller. Joined shim owners
-    // release only their reference, and no branch overwrites a replacement
-    // made by another invocation (or by the operation itself).
     restore();
   }
 }
@@ -153,7 +101,6 @@ function requireOpaqueValue(value: unknown, name: string): string {
   if (
     typeof value !== "string" ||
     value.trim() === "" ||
-    Buffer.byteLength(value, "utf8") > MAX_OIDC_VALUE_BYTES ||
     /[\s\u0000-\u001f\u007f-\u009f]/u.test(value)
   ) {
     throw new StorageError(`${name} is invalid`);
@@ -167,11 +114,10 @@ function requireUserId(value: unknown): string {
   return userId;
 }
 
-function safeDeviceAccessError(error: unknown): string {
-  if (typeof error === "string" && SAFE_DEVICE_ERROR_CODES.has(error)) {
-    return `device login was not approved (${error})`;
-  }
-  return "device login was not approved";
+function deviceAccessError(error: unknown): string {
+  return typeof error === "string" && error
+    ? `device login was not approved (${error})`
+    : "device login was not approved";
 }
 
 /** Adds a real abort boundary around SDK OIDC calls. The SDK OIDC operations
@@ -241,9 +187,6 @@ async function withDeadline<T>(
 function parseOidcUrl(value: unknown, name: string, allowQuery = false, canonical = true): URL {
   if (typeof value !== "string" || value.trim() === "") {
     throw new StorageError(`${name} must be a non-empty URL`);
-  }
-  if (value.length > MAX_OIDC_URL_LENGTH) {
-    throw new StorageError(`${name} exceeds maximum length`);
   }
   if (/[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
     throw new StorageError(`${name} contains invalid control characters`);
@@ -485,16 +428,6 @@ export async function runDeviceCodeLogin(
   if (typeof session.user_code !== "string" || session.user_code.trim() === "") {
     throw new StorageError("OIDC user code must be a non-empty string");
   }
-  if (session.user_code.length > MAX_USER_CODE_LENGTH) {
-    throw new StorageError("OIDC user code exceeds maximum length");
-  }
-  if (session.user_code !== session.user_code.trim()) {
-    throw new StorageError("OIDC user code must not have surrounding whitespace");
-  }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(session.user_code)) {
-    throw new StorageError("OIDC user code contains unsupported characters");
-  }
-
   hooks.onVerification({
     verificationUri,
     verificationUriComplete,
@@ -538,7 +471,7 @@ export async function runDeviceCodeLogin(
     },
   );
   if (isDeviceAccessTokenError(result)) {
-    throw new StorageError(safeDeviceAccessError(result.error));
+    throw new StorageError(deviceAccessError(result.error));
   }
   const accessToken = requireOpaqueValue(result.access_token, "OIDC access token");
   const pending: PendingSession = {

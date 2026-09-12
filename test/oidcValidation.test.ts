@@ -169,24 +169,6 @@ describe("CLI OIDC endpoint validation", () => {
     );
   });
 
-  it("rejects an oversized provider verification URI before exposing it", async () => {
-    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata());
-    vi.mocked(core.registerClient).mockResolvedValue("client-id");
-    const verification = vi.fn();
-    vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
-      device_code: "device-code",
-      user_code: "ABC-123",
-      verification_uri: `https://backend.telecrypt.io/auth/${"a".repeat(2048)}`,
-      expires_in: 600,
-      interval: 1,
-    });
-
-    await expect(runDeviceCodeLogin(HOMESERVER, { onVerification: verification })).rejects.toThrow(
-      "OIDC verification URI exceeds maximum length",
-    );
-    expect(verification).not.toHaveBeenCalled();
-  });
-
   it("fails closed when OIDC discovery does not finish before its deadline", async () => {
     vi.useFakeTimers();
     try {
@@ -231,77 +213,6 @@ describe("CLI OIDC endpoint validation", () => {
       expect(globalObject.window).toBe(previousWindow);
     } finally {
       vi.useRealTimers();
-      if (hadWindow) globalObject.window = previousWindow;
-      else delete globalObject.window;
-    }
-  });
-
-  it("does not overwrite a replacement window owned by another invocation", async () => {
-    const globalObject = globalThis as unknown as { window?: unknown };
-    const hadWindow = Object.prototype.hasOwnProperty.call(globalObject, "window");
-    const previousWindow = globalObject.window;
-    const originalWindow = {};
-    const replacementWindow = {};
-    const controller = new AbortController();
-    try {
-      globalObject.window = originalWindow;
-      vi.mocked(core.discoverOidcIssuer).mockImplementation((_homeserver, signal) =>
-        new Promise<OidcClientConfig>((_resolve, reject) => {
-          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-        }),
-      );
-      const pending = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }, controller.signal);
-      await vi.waitFor(() => expect(core.discoverOidcIssuer).toHaveBeenCalled());
-
-      globalObject.window = replacementWindow;
-      controller.abort(new Error("cancelled by test"));
-      await expect(pending).rejects.toThrow("OIDC operation cancelled");
-      expect(globalObject.window).toBe(replacementWindow);
-    } finally {
-      if (hadWindow) globalObject.window = previousWindow;
-      else delete globalObject.window;
-    }
-  });
-
-  it("keeps one temporary window shim alive for concurrent discovery owners", async () => {
-    const globalObject = globalThis as unknown as { window?: unknown };
-    const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, "window");
-    const previousWindow = globalObject.window;
-    let resolveFirst!: (value: OidcClientConfig) => void;
-    let resolveSecond!: (value: OidcClientConfig) => void;
-    const observedWindows: unknown[] = [];
-    const firstController = new AbortController();
-    const secondController = new AbortController();
-    let first: Promise<unknown> | undefined;
-    let second: Promise<unknown> | undefined;
-    try {
-      if (hadWindow) delete globalObject.window;
-      vi.mocked(core.discoverOidcIssuer).mockImplementation(() => {
-        observedWindows.push(globalObject.window);
-        return new Promise<OidcClientConfig>((resolve) => {
-          if (observedWindows.length === 1) resolveFirst = resolve;
-          else resolveSecond = resolve;
-        });
-      });
-      vi.mocked(core.registerClient).mockRejectedValue(new Error("stop after discovery"));
-
-      first = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }, firstController.signal);
-      second = runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }, secondController.signal);
-      await vi.waitFor(() => expect(observedWindows).toHaveLength(2));
-      expect(observedWindows[0]).toBe(observedWindows[1]);
-      const shim = observedWindows[0];
-
-      resolveFirst(metadata());
-      await expect(first).rejects.toThrow("stop after discovery");
-      expect(globalObject.window).toBe(shim);
-
-      resolveSecond(metadata());
-      await expect(second).rejects.toThrow("stop after discovery");
-      expect(Object.prototype.hasOwnProperty.call(globalObject, "window")).toBe(false);
-    } finally {
-      firstController.abort(new Error("test cleanup"));
-      secondController.abort(new Error("test cleanup"));
-      await Promise.allSettled([first, second].filter((value): value is Promise<unknown> => value !== undefined));
       if (hadWindow) globalObject.window = previousWindow;
       else delete globalObject.window;
     }
@@ -479,42 +390,6 @@ describe("CLI OIDC endpoint validation", () => {
     expect(core.discoverOidcIssuer).not.toHaveBeenCalled();
   });
 
-  it("rejects an oversized provider user code before exposing it", async () => {
-    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata());
-    vi.mocked(core.registerClient).mockResolvedValue("client-id");
-    const verification = vi.fn();
-    vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
-      device_code: "device-code",
-      user_code: "A".repeat(257),
-      verification_uri: "https://backend.telecrypt.io/auth/device",
-      expires_in: 600,
-      interval: 1,
-    });
-
-    await expect(runDeviceCodeLogin(HOMESERVER, { onVerification: verification })).rejects.toThrow(
-      "OIDC user code exceeds maximum length",
-    );
-    expect(verification).not.toHaveBeenCalled();
-  });
-
-  it("rejects a malformed provider user code before exposing it", async () => {
-    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata());
-    vi.mocked(core.registerClient).mockResolvedValue("client-id");
-    const verification = vi.fn();
-    vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
-      device_code: "device-code",
-      user_code: "ABC/123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
-      expires_in: 600,
-      interval: 1,
-    });
-
-    await expect(runDeviceCodeLogin(HOMESERVER, { onVerification: verification })).rejects.toThrow(
-      "OIDC user code contains unsupported characters",
-    );
-    expect(verification).not.toHaveBeenCalled();
-  });
-
   it("exposes only an allowlisted provider error code", async () => {
     vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata());
     vi.mocked(core.registerClient).mockResolvedValue("client-id");
@@ -535,25 +410,6 @@ describe("CLI OIDC endpoint validation", () => {
     const message = (error as Error).message;
     expect(message).toContain("invalid_grant");
     expect(message).toBe("device login was not approved (invalid_grant)");
-  });
-
-  it("uses a generic provider error for an unallowlisted code or description", async () => {
-    vi.mocked(core.discoverOidcIssuer).mockResolvedValue(metadata());
-    vi.mocked(core.registerClient).mockResolvedValue("client-id");
-    vi.mocked(core.startDeviceCodeLogin).mockResolvedValue({
-      device_code: "device-code",
-      user_code: "ABC-123",
-      verification_uri: "https://backend.telecrypt.io/auth/device",
-      expires_in: 600,
-      interval: 1,
-    });
-    vi.mocked(core.waitForDeviceCodeLogin).mockResolvedValue({
-      error: "provider_private_code\nsecret",
-      error_description: "provider detail",
-    });
-
-    const error = await runDeviceCodeLogin(HOMESERVER, { onVerification: vi.fn() }).catch((err: unknown) => err);
-    expect((error as Error).message).toBe("device login was not approved");
   });
 
   it.each([

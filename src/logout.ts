@@ -10,7 +10,7 @@ import {
   writeLogoutMarkerUnlocked,
   writePendingSessionUnlocked,
   writeSessionUnlocked,
-  isBoundedOpaqueValue,
+  isOpaqueValue,
 } from "./profile.js";
 import type { ProfileLock } from "./profile.js";
 import { assertOidcEndpoint, assertTrustedHomeserver } from "./oidc.js";
@@ -23,7 +23,6 @@ import { throwCombinedFailures, withCause } from "./failure.js";
 import { safeDiagnosticText } from "./output.js";
 
 const DEFAULT_LOGOUT_TIMEOUT_MS = 10_000;
-const MAX_LOGOUT_TIMEOUT_MS = 120_000;
 
 async function cancelLogoutReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
   const cancellation = Promise.resolve().then(() => reader.cancel());
@@ -170,14 +169,14 @@ function refreshedCredentials(
 ): RefreshedLogoutCredentials {
   if (!body || typeof body !== "object") throw new StorageError("OIDC refresh response is invalid");
   const response = body as { access_token?: unknown; refresh_token?: unknown };
-  if (!isBoundedOpaqueValue(response.access_token)) {
+  if (!isOpaqueValue(response.access_token)) {
     throw new StorageError("OIDC refresh response contained an invalid access token");
   }
   const nextRefresh = response.refresh_token ?? session.refreshToken;
-  if (!isBoundedOpaqueValue(nextRefresh)) {
+  if (!isOpaqueValue(nextRefresh)) {
     throw new StorageError("OIDC refresh response contained an invalid refresh token");
   }
-  if (!isBoundedOpaqueValue(session.oidcClientId) || typeof session.oidcTokenEndpoint !== "string") {
+  if (!isOpaqueValue(session.oidcClientId) || typeof session.oidcTokenEndpoint !== "string") {
     throw new StorageError("persisted OIDC refresh state is incomplete");
   }
   return {
@@ -202,10 +201,7 @@ export async function requestServerLogout(
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new StorageError("server logout timeout must be positive");
   }
-  if (timeoutMs > MAX_LOGOUT_TIMEOUT_MS) {
-    throw new StorageError("server logout timeout exceeds the allowed maximum");
-  }
-  if (!isBoundedOpaqueValue(session.accessToken)) {
+  if (!isOpaqueValue(session.accessToken)) {
     throw new StorageError("server logout token is invalid");
   }
 
@@ -219,7 +215,7 @@ export async function requestServerLogout(
       issuer,
     )
     : undefined;
-  if (revocationEndpoint !== undefined && !isBoundedOpaqueValue(session.oidcClientId)) {
+  if (revocationEndpoint !== undefined && !isOpaqueValue(session.oidcClientId)) {
     throw new StorageError("persisted OIDC revocation state is incomplete");
   }
   const base = new URL(trustedHomeserver);
@@ -408,7 +404,7 @@ export function finishRemoteLogout(dir: string = profileDir(), heldLock?: Profil
     writeLogoutMarkerUnlocked(dir, heldLock);
   } catch (markerError) {
     try {
-      clearProfileUnlocked(dir, {}, heldLock);
+      clearProfileUnlocked(dir, heldLock);
       return;
     } catch (localCleanupError) {
       throw localLogoutCleanupError(new AggregateError(
@@ -418,10 +414,9 @@ export function finishRemoteLogout(dir: string = profileDir(), heldLock?: Profil
     }
   }
   try {
-    // Keep the marker in place while checking the rest of the profile. If an
-    // unexpected entry makes cleanup incomplete, a retry can still prove that
-    // the remote session was already revoked without using the old token.
-    clearProfileUnlocked(dir, { preserveLogoutMarker: true }, heldLock);
+    // Remove the marker last so an interrupted cleanup can be retried without
+    // presenting the revoked token again.
+    clearProfileUnlocked(dir, heldLock);
   } catch (localCleanupError) {
     throw localLogoutCleanupError(localCleanupError);
   }
@@ -465,7 +460,7 @@ export async function logoutProfile(
     // never force the user to present the old access token again merely
     // because local deletion was interrupted.
     if (revocable || remoteAlreadyRevoked) finishRemoteLogout(dir, lock);
-    else clearProfileUnlocked(dir, {}, lock);
+    else clearProfileUnlocked(dir, lock);
     return {
       hadSession: revocable !== null,
       serverLogout: revocable || remoteAlreadyRevoked ? "revoked" : "not-needed",

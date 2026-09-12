@@ -398,14 +398,6 @@ describe("server logout", () => {
     expect((fetchMock.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
   });
 
-  it("consumes a large successful logout response without a diagnostic-size rejection", async () => {
-    const body = JSON.stringify({ detail: "x".repeat(64 * 1024 + 1) });
-    const fetchMock = vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, body, { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(requestServerLogout(session)).resolves.toBeUndefined();
-  });
-
   it("retains local credentials when remote revocation fails", async () => {
     const dir = fixtureDirectory("telecrypt-logout-test");
     writeSession(session, dir);

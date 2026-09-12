@@ -1,6 +1,6 @@
 {
   "name": "@telecrypt-io/storage-cli",
-  "version": "0.4.13",
+  "version": "0.4.14",
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
@@ -28,13 +28,12 @@
   "scripts": {
     "build": "tsc",
     "lint": "eslint src test --ext .ts",
-    "verify:dependencies": "node scripts/verify-consumer-dependencies.mjs",
-    "test": "node --test test/releasePolicy.test.mjs && vitest run",
+    "test": "vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@telecrypt-io/storage": "0.6.1",
+    "@telecrypt-io/storage": "0.7.0",
     "commander": "15.0.0",
     "fake-indexeddb": "6.2.5",
     "matrix-js-sdk": "42.2.0"

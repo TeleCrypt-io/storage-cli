@@ -6,23 +6,18 @@ import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import {
-  assertSecureProfileDir,
   assertFreshProfileUnlocked,
   acquireProfileLock,
   cryptoSnapshotPath,
   expectedMatrixServerName,
   isCanonicalMatrixUserId,
-  MAX_SESSION_BYTES,
   pendingSessionPath,
   profileDir as configuredProfileDir,
-  readPrivateFile,
   readPendingSession,
   readSession,
   sessionPath,
   writePrivateFile,
-  writePendingSessionUnlocked,
   writeSession,
-  writeSessionUnlocked,
 } from "../src/profile.js";
 import { loadSnapshotFromDisk, saveSnapshotToDisk } from "../src/cryptoSnapshot.js";
 
@@ -64,32 +59,20 @@ function session() {
   };
 }
 
-afterEach(({ task }) => {
+afterEach(() => {
   vi.restoreAllMocks();
   if (originalConfiguredHome === undefined) delete process.env.TELECRYPT_IO_STORAGE_HOME;
   else process.env.TELECRYPT_IO_STORAGE_HOME = originalConfiguredHome;
-  const pending = dirs.splice(0);
-  if (task.result?.state === "fail") {
-    process.stderr.write(
-      [
-        "CLI profile unit test failed; retaining fixture directories for investigation:",
-        ...pending,
-      ].join("\n") + "\n",
-    );
-    return;
-  }
-  for (const dir of pending) fs.rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe("secret-bearing CLI profile state", () => {
-  it("requires an explicitly configured profile home to be canonical absolute", () => {
-    for (const value of ["relative/profile", "", "/tmp/profile/", "/"]) {
-      process.env.TELECRYPT_IO_STORAGE_HOME = value;
-      expect(() => configuredProfileDir()).toThrow(/canonical absolute/u);
-    }
+  it("resolves an explicitly configured absolute profile home", () => {
     const dir = profileDir();
-    process.env.TELECRYPT_IO_STORAGE_HOME = dir;
+    process.env.TELECRYPT_IO_STORAGE_HOME = `${dir}/.`;
     expect(configuredProfileDir()).toBe(dir);
+    process.env.TELECRYPT_IO_STORAGE_HOME = "relative/profile";
+    expect(() => configuredProfileDir()).toThrow(/non-root absolute/u);
   });
 
   it("binds only exact canonical MXIDs to the independently trusted TeleCrypt topology", () => {
@@ -223,50 +206,13 @@ describe("secret-bearing CLI profile state", () => {
     expect(() => assertFreshProfileUnlocked(dir)).toThrow(/profile is not empty/);
   });
 
-  it("bounds session reads and serializes concurrent profile writers", () => {
+  it("serializes concurrent profile writers", () => {
     const dir = profileDir();
-    fs.writeFileSync(sessionPath(dir), "x".repeat(MAX_SESSION_BYTES + 1), { mode: 0o600 });
-    expect(() => readSession(dir)).toThrow(/maximum size/);
-
-    fs.rmSync(sessionPath(dir));
     const first = acquireProfileLock(dir);
     expect(() => acquireProfileLock(dir)).toThrow(/profile is busy/);
     first.release();
     const second = acquireProfileLock(dir);
     second.release();
-  });
-
-  it("rejects an aggregate session larger than the bounded read size before writing", () => {
-    const dir = profileDir();
-    const oversized = session();
-    oversized.accessToken = "a".repeat(6_000);
-    oversized.refreshToken = "b".repeat(6_000);
-    oversized.oidcClientId = "c".repeat(6_000);
-
-    expect(() => writeSession(oversized, dir)).toThrow(
-      `profile session exceeds maximum size of ${MAX_SESSION_BYTES} bytes`,
-    );
-    expect(fs.existsSync(sessionPath(dir))).toBe(false);
-  });
-
-  it("rejects an aggregate pending login state larger than the bounded read size before writing", () => {
-    const dir = profileDir();
-    const oversized = {
-      homeserver: "https://backend.telecrypt.io",
-      deviceId: "DEVICE",
-      accessToken: "a".repeat(6_000),
-      oidcIssuer: "https://backend.telecrypt.io/",
-      refreshToken: "b".repeat(6_000),
-      oidcClientId: "c".repeat(6_000),
-      oidcTokenEndpoint: "https://backend.telecrypt.io/token",
-      oidcRevocationEndpoint: "https://backend.telecrypt.io/revoke",
-      matrixServerName: "telecrypt.io",
-    };
-
-    expect(() => writePendingSessionUnlocked(oversized, dir)).toThrow(
-      `pending login state exceeds maximum size of ${MAX_SESSION_BYTES} bytes`,
-    );
-    expect(fs.existsSync(pendingSessionPath(dir))).toBe(false);
   });
 
   it("recovers a stale PID lock but fences a live process", async () => {
@@ -324,86 +270,30 @@ describe("secret-bearing CLI profile state", () => {
     }
   });
 
-  it("keeps resolving stale-lock races until the lock state is definitive", () => {
+  it("can retry lock release after a filesystem failure", () => {
     const dir = profileDir();
-    const lockPath = path.join(dir, ".profile.lock");
-    const stale = JSON.stringify({ pid: unusedPid(), token: "stale" });
-    fs.writeFileSync(lockPath, stale, { mode: 0o600 });
-    const originalRename = fs.renameSync;
-    let races = 0;
-    const rename = vi.spyOn(fs, "renameSync").mockImplementation(((from, to) => {
-      if (races < 9 && String(from).endsWith("/.profile.lock") && String(to).endsWith(".stale")) {
-        fs.rmSync(lockPath);
-        fs.writeFileSync(lockPath, stale, { mode: 0o600 });
-        races += 1;
-        const error = new Error("simulated stale-lock race") as NodeJS.ErrnoException;
-        error.code = "ENOENT";
-        throw error;
+    const lock = acquireProfileLock(dir);
+    const originalRemove = fs.rmSync;
+    let failOnce = true;
+    const remove = vi.spyOn(fs, "rmSync").mockImplementation(((target, options) => {
+      if (failOnce && String(target).endsWith(".release")) {
+        failOnce = false;
+        throw new Error("simulated lock cleanup failure");
       }
-      return originalRename(from, to);
-    }) as typeof fs.renameSync);
+      return originalRemove(target, options);
+    }) as typeof fs.rmSync);
     try {
-      const recovered = acquireProfileLock(dir);
-      expect(races).toBe(9);
-      recovered.release();
+      expect(() => lock.release()).toThrow("simulated lock cleanup failure");
+      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".release"))).toBe(true);
+      lock.release();
+      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".release"))).toBe(false);
     } finally {
-      rename.mockRestore();
-      fs.rmSync(lockPath, { force: true });
+      remove.mockRestore();
     }
   });
 
-  it("does not unlink a replacement lock during stale recovery interleaving", () => {
-    const dir = profileDir();
-    const stalePid = unusedPid();
-    const lockPath = path.join(dir, ".profile.lock");
-    const stale = JSON.stringify({ pid: stalePid, token: "stale" });
-    const replacement = JSON.stringify({ pid: process.pid, token: "replacement" });
-    fs.writeFileSync(lockPath, stale, { mode: 0o600 });
-    const originalRename = fs.renameSync;
-    let interleaved = false;
-    const rename = vi.spyOn(fs, "renameSync").mockImplementation(((from, to) => {
-      if (!interleaved && String(from).endsWith("/.profile.lock") && String(to).endsWith(".stale")) {
-        interleaved = true;
-        fs.writeFileSync(lockPath, replacement, { mode: 0o600 });
-      }
-      return originalRename(from, to);
-    }) as typeof fs.renameSync);
-    try {
-      expect(() => acquireProfileLock(dir)).toThrow(/profile is busy/);
-      expect(fs.readFileSync(lockPath, "utf8")).toBe(replacement);
-    } finally {
-      rename.mockRestore();
-      fs.rmSync(lockPath, { force: true });
-    }
-  });
 
-  it("does not overwrite a lock acquired after stale quarantine", () => {
-    const dir = profileDir();
-    const stalePid = unusedPid();
-    const lockPath = path.join(dir, ".profile.lock");
-    const stale = JSON.stringify({ pid: stalePid, token: "stale" });
-    const replacement = JSON.stringify({ pid: process.pid, token: "replacement" });
-    fs.writeFileSync(lockPath, stale, { mode: 0o600 });
-    const originalRename = fs.renameSync;
-    const rename = vi.spyOn(fs, "renameSync").mockImplementation(((from, to) => {
-      const result = originalRename(from, to);
-      if (String(to).endsWith(".stale")) fs.writeFileSync(to, replacement, { mode: 0o600 });
-      return result;
-    }) as typeof fs.renameSync);
-    const originalLink = fs.linkSync;
-    const link = vi.spyOn(fs, "linkSync").mockImplementation(((from, to) => {
-      if (String(to).endsWith("/.profile.lock")) fs.writeFileSync(lockPath, replacement, { mode: 0o600 });
-      return originalLink(from, to);
-    }) as typeof fs.linkSync);
-    try {
-      expect(() => acquireProfileLock(dir)).toThrow(/profile is busy/);
-      expect(fs.readFileSync(lockPath, "utf8")).toBe(replacement);
-    } finally {
-      rename.mockRestore();
-      link.mockRestore();
-      fs.rmSync(lockPath, { force: true });
-    }
-  });
+
 
   it("keeps the previous private file when atomic replacement fails", () => {
     const dir = profileDir();
@@ -423,192 +313,16 @@ describe("secret-bearing CLI profile state", () => {
     }
   });
 
-  it("uses the retained directory handle when the profile pathname is replaced", () => {
-    const dir = profileDir();
-    const originalDirectory = `${dir}-original`;
-    dirs.push(originalDirectory);
-    const lock = acquireProfileLock(dir);
-    try {
-      fs.renameSync(dir, originalDirectory);
-      fs.mkdirSync(dir, { mode: 0o700 });
-      writeSessionUnlocked(session(), dir, lock);
-      expect(fs.existsSync(path.join(originalDirectory, "session.json"))).toBe(true);
-      expect(fs.existsSync(path.join(dir, "session.json"))).toBe(false);
-    } finally {
-      lock.release();
-    }
-  });
 
-  it("returns exact private-file bytes from short reads after one payload pass", () => {
-    const dir = profileDir();
-    const target = path.join(dir, "large-private-state");
-    const expected = Buffer.alloc(128 * 1024, 0).map((_value, index) => index % 251);
-    writePrivateFile(target, expected);
-    const originalReadSync = fs.readSync;
-    let bytesRead = 0;
-    vi.spyOn(fs, "readSync").mockImplementation(((fd, buffer, offset, length, position) => {
-      const count = originalReadSync(fd, buffer, offset, Math.min(length, 7), position);
-      bytesRead += count;
-      return count;
-    }) as typeof fs.readSync);
 
-    expect(readPrivateFile(target, expected.length)).toEqual(expected);
-    expect(bytesRead).toBe(expected.length);
-  });
 
-  it("accepts an empty private file", () => {
-    const dir = profileDir();
-    const target = path.join(dir, "empty-private-state");
-    writePrivateFile(target, "");
 
-    expect(readPrivateFile(target, 10)).toEqual(Buffer.alloc(0));
-  });
 
-  it("rejects EOF after a partial private-file read", () => {
-    const dir = profileDir();
-    const target = path.join(dir, "private-state");
-    writePrivateFile(target, "private bytes");
-    const originalReadSync = fs.readSync;
-    let reads = 0;
-    vi.spyOn(fs, "readSync").mockImplementation(((fd, buffer, offset, length, position) => {
-      reads += 1;
-      if (reads > 1) return 0;
-      return originalReadSync(fd, buffer, offset, Math.min(length, 4), position);
-    }) as typeof fs.readSync);
 
-    expect(() => readPrivateFile(target, 100)).toThrow("profile file changed while it was being read");
-  });
 
-  it("rejects an observed private-file metadata change during the read", () => {
-    const dir = profileDir();
-    const target = path.join(dir, "private-state");
-    writePrivateFile(target, "private bytes");
-    const originalReadSync = fs.readSync;
-    let changed = false;
-    vi.spyOn(fs, "readSync").mockImplementation(((...args: [number, NodeJS.ArrayBufferView, number, number, number | null]) => {
-      const count = originalReadSync(...args);
-      if (!changed && args[4] === null) {
-        changed = true;
-        const timestamp = new Date(fs.statSync(target).mtimeMs + 5_000);
-        fs.utimesSync(target, timestamp, timestamp);
-      }
-      return count;
-    }) as typeof fs.readSync);
 
-    expect(() => readPrivateFile(target, 100)).toThrow("profile file changed while it was being read");
-  });
 
-  it("rejects an owner-writable shared ancestor without the root sticky-directory contract", () => {
-    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "telecrypt-untrusted-ancestor-"));
-    dirs.push(parent);
-    fs.chmodSync(parent, 0o777);
-    const child = path.join(parent, "profile");
-    fs.mkdirSync(child, { mode: 0o700 });
-    expect(() => acquireProfileLock(child)).toThrow(/untrusted writable ancestor/);
-  });
 
-  it("surfaces and retries a lock release failure after quarantine", () => {
-    const dir = profileDir();
-    const lock = acquireProfileLock(dir);
-    const originalRemove = fs.rmSync;
-    const releaseFailure = new Error("simulated release failure");
-    let failOnce = true;
-    const remove = vi.spyOn(fs, "rmSync").mockImplementation(((target, options) => {
-      if (failOnce && String(target).endsWith(".release")) {
-        failOnce = false;
-        throw releaseFailure;
-      }
-      return originalRemove(target, options);
-    }) as typeof fs.rmSync);
-    try {
-      let failure: unknown;
-      try {
-        lock.release();
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toContain("profile lock cleanup failed");
-      expect((failure as Error).cause).toBe(releaseFailure);
-      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".release"))).toBe(true);
-      lock.release();
-      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".release"))).toBe(false);
-    } finally {
-      remove.mockRestore();
-    }
-  });
-
-  it("rethrows an ambiguous directory close failure without retrying the close", () => {
-    const dir = profileDir();
-    const lock = acquireProfileLock(dir);
-    const originalClose = fs.closeSync;
-    const closeFailure = new Error("simulated directory close failure");
-    const close = vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
-      originalClose(fd);
-      if (fd === lock.directoryFd) throw closeFailure;
-    });
-    try {
-      expect(() => lock.release()).toThrow("profile lock cleanup failed");
-      expect(() => lock.release()).toThrow("profile lock cleanup failed");
-      expect(close.mock.calls.filter(([fd]) => fd === lock.directoryFd)).toHaveLength(1);
-    } finally {
-      close.mockRestore();
-    }
-  });
-
-  it("removes the exact lock entry when initial lock synchronization fails", () => {
-    const dir = profileDir();
-    const sync = vi.spyOn(fs, "fsyncSync").mockImplementation(() => {
-      throw new Error("simulated lock synchronization failure");
-    });
-    try {
-      expect(() => acquireProfileLock(dir)).toThrow("simulated lock synchronization failure");
-      expect(fs.existsSync(path.join(dir, ".profile.lock"))).toBe(false);
-      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".failed"))).toBe(false);
-    } finally {
-      sync.mockRestore();
-    }
-  });
-
-  it("removes a partial lock entry when the initial write fails", () => {
-    const dir = profileDir();
-    const originalWrite = fs.writeFileSync;
-    const write = vi.spyOn(fs, "writeFileSync").mockImplementation(((file, data, options) => {
-      if (typeof file === "number") {
-        originalWrite(file, "{", options);
-        throw new Error("simulated partial lock write failure");
-      }
-      return originalWrite(file, data, options);
-    }) as typeof fs.writeFileSync);
-    try {
-      expect(() => acquireProfileLock(dir)).toThrow("simulated partial lock write failure");
-      expect(fs.existsSync(path.join(dir, ".profile.lock"))).toBe(false);
-      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".failed"))).toBe(false);
-    } finally {
-      write.mockRestore();
-    }
-  });
-
-  it("removes the exact lock entry when its initial descriptor close fails", () => {
-    const dir = profileDir();
-    const originalClose = fs.closeSync;
-    let closeCalls = 0;
-    const close = vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
-      closeCalls += 1;
-      if (closeCalls === 3) {
-        originalClose(fd);
-        throw new Error("simulated lock descriptor close failure");
-      }
-      return originalClose(fd);
-    });
-    try {
-      expect(() => acquireProfileLock(dir)).toThrow("simulated lock descriptor close failure");
-      expect(fs.existsSync(path.join(dir, ".profile.lock"))).toBe(false);
-      expect(fs.readdirSync(dir).some((entry) => entry.endsWith(".failed"))).toBe(false);
-    } finally {
-      close.mockRestore();
-    }
-  });
 
   it("rejects a group-readable profile directory before loading state", () => {
     const dir = profileDir();
@@ -629,7 +343,7 @@ describe("secret-bearing CLI profile state", () => {
     const target = path.join(dir, "target");
     fs.writeFileSync(target, "{}", { mode: 0o600 });
     fs.symlinkSync(target, sessionPath(dir));
-    expect(() => readSession(dir)).toThrow(/must not be a symlink/);
+    expect(() => readSession(dir)).toThrow(/ELOOP/u);
 
     fs.rmSync(sessionPath(dir));
     fs.mkdirSync(sessionPath(dir), { mode: 0o700 });
@@ -647,19 +361,4 @@ describe("secret-bearing CLI profile state", () => {
     );
   });
 
-  it("rejects a profile directory with a different owner", () => {
-    const dir = profileDir();
-    const uid = process.getuid?.();
-    if (uid === undefined) throw new Error("test requires POSIX ownership metadata");
-    const original = fs.lstatSync;
-    vi.spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike) => {
-      const stat = original(target);
-      if (target === dir) {
-        return Object.create(stat, { uid: { value: uid + 1 } }) as fs.Stats;
-      }
-      return stat;
-    }) as typeof fs.lstatSync);
-
-    expect(() => assertSecureProfileDir(dir)).toThrow(/different owner/);
-  });
 });

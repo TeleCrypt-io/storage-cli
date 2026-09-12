@@ -5,7 +5,7 @@ import {
   acquireProfileLock,
   cryptoSnapshotPath,
   canonicalMatrixServerName,
-  isBoundedOpaqueValue,
+  isOpaqueValue,
   isCanonicalMatrixUserId,
   profileDir,
   type ProfileLock,
@@ -46,7 +46,7 @@ export function withRefreshedTokens(
   session: Session,
   tokens: { accessToken: string; refreshToken?: string },
 ): Session {
-  if (!isBoundedOpaqueValue(tokens.accessToken) || (tokens.refreshToken !== undefined && !isBoundedOpaqueValue(tokens.refreshToken))) {
+  if (!isOpaqueValue(tokens.accessToken) || (tokens.refreshToken !== undefined && !isOpaqueValue(tokens.refreshToken))) {
     throw new StorageError("OIDC refresh response contained an invalid token");
   }
   return {
@@ -481,7 +481,6 @@ export async function waitForBackupSettled(
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new StorageError("key backup timeout must be positive");
   }
-  if (timeoutMs > 120_000) throw new StorageError("key backup timeout exceeds the allowed maximum");
   if (signal.aborted) throw new StorageError("operation cancelled");
   const deadline = Date.now() + timeoutMs;
   const client = storage.getClient();

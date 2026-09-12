@@ -7,9 +7,9 @@ under the `storage` namespace (`telecrypt-io storage ...`).
 
 Crypto state is persisted in the selected profile so separate CLI processes can reopen the same
 encrypted session. `TELECRYPT_IO_STORAGE_HOME`, when set, must be an existing or creatable
-canonical absolute path (no relative paths, `.`/`..` components, or trailing separator).
+absolute path (it is resolved before use).
 
-The CLI requires Linux with `/proc/self/fd` and Node.js `>=24.20.0`. Release verification
+The CLI requires Linux and Node.js `>=24.20.0`. Release verification
 uses that exact Node.js version and the bundled npm `11.19.0`.
 
 ## Setup
@@ -29,11 +29,11 @@ npm exec --ignore-scripts -- tsx src/index.ts storage <command> [args] [--json]
 Every command reads/writes a **profile directory**: an OIDC session (homeserver, userId, deviceId,
 issuer and token metadata, access/refresh tokens) and the crypto store snapshot. Default `~/.telecrypt-io/storage`; override
 with `TELECRYPT_IO_STORAGE_HOME` for independent accounts/devices. When set, that variable must be
-a canonical absolute path without relative or trailing components. The profile directory and its
-private state files must be owned by the current user, regular (not symlinked), and inaccessible to group
-and other users; the CLI refuses unsafe state rather than trying to repair it.
-Commands hold an exclusive profile lock for their full lifetime, so refresh, logout, and crypto
-snapshot writes cannot race or resurrect an older session. A failed local cleanup after a successful
+an absolute path. The profile directory and private state files read by the CLI must be owned by the
+current user, regular files (not symlinks), and inaccessible to group and other users; the CLI
+refuses unsafe state rather than trying to repair it.
+Commands hold an exclusive profile lock for their full lifetime, serializing ordinary concurrent
+commands that use the same profile directory. A failed local cleanup after a successful
 remote logout leaves a private retry marker; rerunning logout completes cleanup without reusing the
 revoked token.
 The persisted device ID is required and is passed back into the shared refresh adapter, binding every
@@ -42,13 +42,11 @@ before storage opens.
 Issuer and token endpoint metadata are also required and are checked against the trusted homeserver and
 issuer path before refresh or logout. Profiles written by older CLI releases without the issuer binding
 are rejected and must be logged in again; the CLI never guesses missing OIDC authority.
-These checks protect against other users and accidental symlink/path substitution; as with ordinary
-private same-UID application state, a same-user process with write access to the profile directory is
-inside the trust boundary. The retained directory handle, no-follow reads, atomic writes, and full-command
-lock prevent pathname replacement from moving an active command to a different profile. The profile is
-protected by filesystem ownership and mode checks; bearer tokens and cryptographic state are not wrapped
-in an additional application-level at-rest encryption layer. Every command requires Linux
-`/proc/self/fd` so profile and file paths can remain anchored without a native `openat` wrapper.
+The profile is protected by filesystem ownership and mode checks. A same-user process with write
+access is inside the trust boundary and must not replace the profile directory while a command is
+running. Writes are atomic, and the command-wide lock prevents ordinary simultaneous CLI commands
+from replacing one another's session state. Bearer tokens
+and cryptographic state are not wrapped in an additional application-level at-rest encryption layer.
 
 ```sh
 TELECRYPT_IO_STORAGE_HOME="$HOME/.telecrypt-io/storage-alice" telecrypt-io storage login --homeserver https://backend.telecrypt.io
@@ -123,10 +121,9 @@ telecrypt-io storage file delete <treeId> <fileId>
 Delete files before deleting their containing folder or vault. Folder and vault deletion refuses
 nonempty trees, including child folders; remove empty child folders explicitly first.
 
-File inputs are limited to 128 MiB. The CLI reads upload inputs once through an anchored descriptor
-and rejects short reads or changes to observed file metadata during the read. Downloads use an atomic
-temporary file and refuse every existing destination, including regular files. Download bytes are held
-in memory and kept inside the command's 120-second cancellation boundary before atomic install.
+File uploads are limited to 128 MiB. Downloads use an atomic temporary file and refuse to replace an
+existing destination. Download bytes are held in memory and kept inside the command's 120-second
+cancellation boundary before installation.
 
 ## Example: two participants sharing a vault
 
