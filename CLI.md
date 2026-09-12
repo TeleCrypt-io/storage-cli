@@ -123,10 +123,10 @@ telecrypt-io storage file delete <treeId> <fileId>
 Delete files before deleting their containing folder or vault. Folder and vault deletion refuses
 nonempty trees, including child folders; remove empty child folders explicitly first.
 
-File inputs are limited to 128 MiB. The CLI reads upload inputs through an anchored descriptor and
-rejects same-size mutation detected during the read; downloads use an atomic temporary file and refuse
-every existing destination, including regular files. Download bytes are held in memory and kept inside
-the command's 120-second cancellation boundary before atomic install.
+File inputs are limited to 128 MiB. The CLI reads upload inputs once through an anchored descriptor
+and rejects short reads or changes to observed file metadata during the read. Downloads use an atomic
+temporary file and refuse every existing destination, including regular files. Download bytes are held
+in memory and kept inside the command's 120-second cancellation boundary before atomic install.
 
 ## Example: two participants sharing a vault
 

@@ -396,20 +396,6 @@ jobs:
         with:
           node-version: "24.20.0"
 
-      - name: Recheck the immutable source identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/hardenReleaseTransport.sh . https://github.com/TeleCrypt-io/storage-cli.git
-          node scripts/verifyReleaseSource.mjs "$GITHUB_REF_NAME" "$GITHUB_SHA"
-          test "$(npm --version)" = "11.19.0"
-          timeout 120s git fetch --force --no-tags origin \
-            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          tag_ref="refs/tags/$GITHUB_REF_NAME"
-          test "$(git cat-file -t "$tag_ref")" = tag
-          test "$(git rev-parse "$tag_ref^{commit}")" = "$GITHUB_SHA"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-
       - name: Download and verify the tested archive
         env:
           GH_TOKEN: ${{ github.token }}
@@ -449,38 +435,6 @@ jobs:
             fi
             replay_capture "$body" "$error" true "$semantic_output" "$semantic_error" || replay_status="$?"
             return "$status"
-          }
-          verify_mutation_boundary() {
-            local boundary_tag_ref="refs/tags/$GITHUB_REF_NAME"
-            timeout 120s git fetch --force --no-tags origin \
-              "$boundary_tag_ref:$boundary_tag_ref"
-            test "$(git cat-file -t "$boundary_tag_ref")" = tag
-            local boundary_tag_object
-            boundary_tag_object="$(git rev-parse "$boundary_tag_ref")"
-            test "$boundary_tag_object" = "$tag_object"
-            local boundary_tag_commit
-            boundary_tag_commit="$(git rev-parse "$boundary_tag_ref^{commit}")"
-            test "$boundary_tag_commit" = "$GITHUB_SHA"
-            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-            local boundary_archive_sha256
-            boundary_archive_sha256="$(sha256sum "$archive" | awk '{ print $1 }')"
-            test "$boundary_archive_sha256" = "$archive_sha256"
-            local boundary_remote_tag
-            boundary_remote_tag="$(timeout 30s git ls-remote --refs origin "$boundary_tag_ref")"
-            test "$(wc -l <<<"$boundary_remote_tag")" = 1
-            test "$(awk '{ print $1 }' <<<"$boundary_remote_tag")" = "$boundary_tag_object"
-            local boundary_remote_commit
-            boundary_remote_commit="$(timeout 30s git ls-remote origin "$boundary_tag_ref^{}")"
-            test "$(wc -l <<<"$boundary_remote_commit")" = 1
-            test "$(awk '{ print $1 }' <<<"$boundary_remote_commit")" = "$boundary_tag_commit"
-            local boundary_remote_sdk_tag
-            boundary_remote_sdk_tag="$(timeout 30s git ls-remote --refs https://github.com/TeleCrypt-io/storage-sdk.git "$sdk_ref")"
-            test "$(wc -l <<<"$boundary_remote_sdk_tag")" = 1
-            test "$(awk '{ print $1 }' <<<"$boundary_remote_sdk_tag")" = "$sdk_tag_object"
-            local boundary_remote_sdk_commit
-            boundary_remote_sdk_commit="$(timeout 30s git ls-remote https://github.com/TeleCrypt-io/storage-sdk.git "$sdk_ref^{}")"
-            test "$(wc -l <<<"$boundary_remote_sdk_commit")" = 1
-            test "$(awk '{ print $1 }' <<<"$boundary_remote_sdk_commit")" = "$sdk_tag_commit"
           }
           archive="release/${GITHUB_REF_NAME}.tgz"
           test "$(find release -maxdepth 1 -type f -name '*.tgz' | wc -l)" = 1
@@ -651,9 +605,6 @@ jobs:
             set_release_resource_endpoint
           fi
 
-          # Do not create or attach an asset until the live remote identity is
-          # revalidated after the read-only Release probe.
-          verify_mutation_boundary
           if [ "$release_state" = "missing" ]; then
             capture_gh "$release_create_json" "$release_create_error" \
               api --hostname github.com --method POST \
@@ -705,10 +656,8 @@ jobs:
           NODE
 
           verify_publish_boundary() {
-            # Revalidate the authoritative Git identities first, then fetch and
-            # validate the mutable draft as the final read-only operation before
+            # Validate the mutable draft as the final read-only operation before
             # publication. No other network operation occurs before the PATCH.
-            verify_mutation_boundary
             capture_gh "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$RUNNER_TEMP/storage-cli-release-before-publish.err" \
               api --hostname github.com --header "X-GitHub-Api-Version: 2026-03-10" "$release_resource_endpoint"
             replay_api_failure "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$RUNNER_TEMP/storage-cli-release-before-publish.err" node --input-type=module - "$RUNNER_TEMP/storage-cli-release-before-publish.json" "$archive" "$digest" <<'NODE'
@@ -724,8 +673,7 @@ jobs:
           NODE
           }
 
-          # The final boundary keeps the authoritative Git checks adjacent to
-          # the final draft/asset validation and irreversible publication.
+          # Keep the final draft/asset validation adjacent to publication.
           verify_publish_boundary
 
           capture_gh "$RUNNER_TEMP/storage-cli-published-release.json" "$RUNNER_TEMP/storage-cli-publish.err" \

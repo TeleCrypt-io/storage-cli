@@ -66,22 +66,58 @@ describe("bounded file transfer paths", () => {
     expect(fs.readFileSync(destination, "utf8")).toBe("download bytes");
   });
 
-  it("rejects a same-size in-place source mutation during the read", () => {
+  it("returns the exact bytes from short reads after reading the payload once", () => {
+    const dir = directory();
+    const source = path.join(dir, "source.txt");
+    const expected = Buffer.from("source bytes");
+    fs.writeFileSync(source, expected);
+    const originalReadSync = fs.readSync;
+    let bytesRead = 0;
+    vi.spyOn(fs, "readSync").mockImplementation(((fd, buffer, offset, length, position) => {
+      const count = originalReadSync(fd, buffer, offset, Math.min(length, 3), position);
+      bytesRead += count;
+      return count;
+    }) as typeof fs.readSync);
+
+    expect(readBoundedInput(source)).toEqual(expected);
+    expect(bytesRead).toBe(expected.length);
+  });
+
+  it("accepts an empty input", () => {
+    const dir = directory();
+    const source = path.join(dir, "empty.txt");
+    fs.writeFileSync(source, "");
+
+    expect(readBoundedInput(source)).toEqual(Buffer.alloc(0));
+  });
+
+  it("rejects EOF after a partial input read", () => {
     const dir = directory();
     const source = path.join(dir, "source.txt");
     fs.writeFileSync(source, "source bytes");
     const originalReadSync = fs.readSync;
-    let firstRead = true;
+    let reads = 0;
+    vi.spyOn(fs, "readSync").mockImplementation(((fd, buffer, offset, length, position) => {
+      reads += 1;
+      if (reads > 1) return 0;
+      return originalReadSync(fd, buffer, offset, Math.min(length, 3), position);
+    }) as typeof fs.readSync);
+
+    expect(() => readBoundedInput(source)).toThrow("input file changed while it was being read");
+  });
+
+  it("rejects an observed metadata change during the read", () => {
+    const dir = directory();
+    const source = path.join(dir, "source.txt");
+    fs.writeFileSync(source, "source bytes");
+    const originalReadSync = fs.readSync;
+    let changed = false;
     const readArgs = (...args: [number, NodeJS.ArrayBufferView, number, number, number | null]) => {
       const count = originalReadSync(...args);
-      if (firstRead && args[4] === null) {
-        firstRead = false;
-        const writer = fs.openSync(source, "r+");
-        try {
-          fs.writeSync(writer, Buffer.from("changed byte"), 0, "changed byte".length, 0);
-        } finally {
-          fs.closeSync(writer);
-        }
+      if (!changed && args[4] === null) {
+        changed = true;
+        const timestamp = new Date(fs.statSync(source).mtimeMs + 5_000);
+        fs.utimesSync(source, timestamp, timestamp);
       }
       return count;
     };

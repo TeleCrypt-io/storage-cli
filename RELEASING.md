@@ -51,11 +51,11 @@ for the canonical development, acceptance, failure-handling, and production boun
    the exact SDK release's bounded npm/SLSA provenance verifier. That verifier binds the package,
    archive, workflow tag, hosted builder, and resolved SDK commit; the legacy npm `gitHead` field is
    not a release authority.
-5. Only after all checks pass, the publish job downloads the tested archive and revalidates the exact
-   remote annotated tag object, peeled commit, tag ref, and authoritative current `main` tip immediately before
-   every Release mutation. Git and GitHub transport configuration is isolated to canonical HTTPS
-   endpoints. The recorded SDK release tag object and commit are also revalidated at publication.
-   Existing-draft discovery uses one complete paginated Release-list read. When no Release exists,
+5. Only after all checks pass, the publish job downloads the tested archive and its identity files.
+   Before changing a Release, it verifies the annotated source tag and commit, the source identity,
+   the archive digest, and the recorded SDK tag and commit. These immutable inputs are checked once
+   in the publish job. Existing-draft discovery uses one complete paginated Release-list read. When
+   no Release exists,
    the workflow creates one exact draft through the Releases API, validates the returned numeric
    Release ID, and constructs the resource endpoint from that ID. It then performs a direct
    read of that exact resource and proceeds only when the exact empty or exact one-asset draft is
@@ -70,7 +70,3 @@ for the canonical development, acceptance, failure-handling, and production boun
 
 Never replace, delete, or rebuild a release archive. A correction requires a new source commit,
 new semver version, and a fresh annotated `storage-cli-v*` tag.
-
-The current CLI source uses package version `0.4.10` while selecting the exact
-published, immutable `@telecrypt-io/storage` `0.5.31` / `matrix-js-sdk` `42.2.0` binding. The
-immutable `storage-cli-v0.4.10` release is produced only after the hosted verification checks pass.

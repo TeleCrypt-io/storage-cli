@@ -213,12 +213,12 @@ test("the SDK CLI verifier bounds its lockfile input", () => {
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
-test("the release fixtures pin CLI 0.4.12 and SDK 0.6.1", () => {
+test("the release fixtures pin CLI 0.4.13 and SDK 0.6.1", () => {
   const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(fs.readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.version, "0.4.12");
-  assert.equal(packageLock.version, "0.4.12");
-  assert.equal(packageLock.packages?.[""]?.version, "0.4.12");
+  assert.equal(packageJson.version, "0.4.13");
+  assert.equal(packageLock.version, "0.4.13");
+  assert.equal(packageLock.packages?.[""]?.version, "0.4.13");
   assert.equal(packageJson.dependencies?.["@telecrypt-io/storage"], "0.6.1");
   assert.equal(packageLock.packages?.["node_modules/@telecrypt-io/storage"]?.version, "0.6.1");
 });

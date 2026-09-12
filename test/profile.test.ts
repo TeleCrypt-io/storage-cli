@@ -439,17 +439,63 @@ describe("secret-bearing CLI profile state", () => {
     }
   });
 
-  it("does not corrupt the returned buffer when verification reads are short", () => {
+  it("returns exact private-file bytes from short reads after one payload pass", () => {
     const dir = profileDir();
     const target = path.join(dir, "large-private-state");
     const expected = Buffer.alloc(128 * 1024, 0).map((_value, index) => index % 251);
     writePrivateFile(target, expected);
-    const originalRead = fs.readSync;
-    vi.spyOn(fs, "readSync").mockImplementation(((fd, buffer, offset, length, position) =>
-      originalRead(fd, buffer, offset, position === null ? length : Math.min(length, 7), position)
-    ) as typeof fs.readSync);
+    const originalReadSync = fs.readSync;
+    let bytesRead = 0;
+    vi.spyOn(fs, "readSync").mockImplementation(((fd, buffer, offset, length, position) => {
+      const count = originalReadSync(fd, buffer, offset, Math.min(length, 7), position);
+      bytesRead += count;
+      return count;
+    }) as typeof fs.readSync);
 
     expect(readPrivateFile(target, expected.length)).toEqual(expected);
+    expect(bytesRead).toBe(expected.length);
+  });
+
+  it("accepts an empty private file", () => {
+    const dir = profileDir();
+    const target = path.join(dir, "empty-private-state");
+    writePrivateFile(target, "");
+
+    expect(readPrivateFile(target, 10)).toEqual(Buffer.alloc(0));
+  });
+
+  it("rejects EOF after a partial private-file read", () => {
+    const dir = profileDir();
+    const target = path.join(dir, "private-state");
+    writePrivateFile(target, "private bytes");
+    const originalReadSync = fs.readSync;
+    let reads = 0;
+    vi.spyOn(fs, "readSync").mockImplementation(((fd, buffer, offset, length, position) => {
+      reads += 1;
+      if (reads > 1) return 0;
+      return originalReadSync(fd, buffer, offset, Math.min(length, 4), position);
+    }) as typeof fs.readSync);
+
+    expect(() => readPrivateFile(target, 100)).toThrow("profile file changed while it was being read");
+  });
+
+  it("rejects an observed private-file metadata change during the read", () => {
+    const dir = profileDir();
+    const target = path.join(dir, "private-state");
+    writePrivateFile(target, "private bytes");
+    const originalReadSync = fs.readSync;
+    let changed = false;
+    vi.spyOn(fs, "readSync").mockImplementation(((...args: [number, NodeJS.ArrayBufferView, number, number, number | null]) => {
+      const count = originalReadSync(...args);
+      if (!changed && args[4] === null) {
+        changed = true;
+        const timestamp = new Date(fs.statSync(target).mtimeMs + 5_000);
+        fs.utimesSync(target, timestamp, timestamp);
+      }
+      return count;
+    }) as typeof fs.readSync);
+
+    expect(() => readPrivateFile(target, 100)).toThrow("profile file changed while it was being read");
   });
 
   it("rejects an owner-writable shared ancestor without the root sticky-directory contract", () => {

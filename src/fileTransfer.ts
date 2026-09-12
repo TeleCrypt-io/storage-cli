@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import * as path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { StorageError } from "@telecrypt-io/storage/core";
 import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
 import { MAX_MEDIA_FILE_BYTES } from "./limits.js";
@@ -71,8 +71,7 @@ function metadataChanged(before: fs.Stats, after: fs.Stats): boolean {
   );
 }
 
-/** Reads a bounded regular file through an anchored descriptor. The second
- * pass catches same-size in-place mutation that inode/size checks cannot see. */
+/** Reads a bounded regular file through an anchored descriptor. */
 export function readBoundedInput(filePath: string): Buffer {
   const parentFd = openSecureDirectory(path.dirname(filePath));
   let fd: number | undefined;
@@ -96,19 +95,8 @@ export function readBoundedInput(filePath: string): Buffer {
       offset += count;
     }
 
-    const digest = createHash("sha256").update(data).digest();
-    const verifyHash = createHash("sha256");
-    const scratch = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, opened.size)));
-    let position = 0;
-    while (position < opened.size) {
-      const count = fs.readSync(fd, scratch, 0, Math.min(scratch.length, opened.size - position), position);
-      if (count === 0) throw new StorageError("input file changed while it was being read");
-      verifyHash.update(scratch.subarray(0, count));
-      position += count;
-    }
-
     const final = fs.fstatSync(fd);
-    if (metadataChanged(opened, final) || !digest.equals(verifyHash.digest())) {
+    if (metadataChanged(opened, final)) {
       throw new StorageError("input file changed while it was being read");
     }
     result = data;

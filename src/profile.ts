@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { expectedMatrixServerName } from "./topology.js";
 import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
 
@@ -781,16 +781,6 @@ function readPrivateFileAt(directoryFd: number, name: string, maxBytes?: number)
       offset += read;
     }
     if (offset !== out.length) throw new Error("profile file changed while it was being read");
-    const digest = createHash("sha256").update(out).digest();
-    const verifyHash = createHash("sha256");
-    const verifyBuffer = Buffer.alloc(Math.min(Math.max(stat.size, 1), 64 * 1024));
-    let position = 0;
-    while (position < stat.size) {
-      const read = fs.readSync(fd, verifyBuffer, 0, Math.min(verifyBuffer.length, stat.size - position), position);
-      if (read === 0) throw new Error("profile file changed while it was being read");
-      verifyHash.update(verifyBuffer.subarray(0, read));
-      position += read;
-    }
     const final = fs.fstatSync(fd);
     if (
       final.dev !== observed.dev ||
@@ -798,8 +788,7 @@ function readPrivateFileAt(directoryFd: number, name: string, maxBytes?: number)
       final.size !== stat.size ||
       final.mode !== stat.mode ||
       final.mtimeMs !== stat.mtimeMs ||
-      final.ctimeMs !== stat.ctimeMs ||
-      !digest.equals(verifyHash.digest())
+      final.ctimeMs !== stat.ctimeMs
     ) {
       throw new Error("profile file changed while it was being read");
     }
@@ -841,7 +830,6 @@ export function readSession(
   dir: string = profileDir(),
   heldLock?: ProfileLock,
 ): Session | null {
-  if (!heldLock) assertSecureProfileDir(dir);
   const p = sessionPath(dir);
   const bytes = readPrivateFile(p, MAX_SESSION_BYTES, heldLock);
   if (!bytes) return null;
@@ -861,7 +849,6 @@ export function readPendingSession(
   dir: string = profileDir(),
   heldLock?: ProfileLock,
 ): PendingSession | null {
-  if (!heldLock) assertSecureProfileDir(dir);
   const bytes = readPrivateFile(pendingSessionPath(dir), MAX_SESSION_BYTES, heldLock);
   if (!bytes) return null;
   let parsed: unknown;
