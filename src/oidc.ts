@@ -189,20 +189,8 @@ export async function runDeviceCodeLogin(
   );
   const issuer = new URL(assertOidcEndpoint(discoveredMetadata.issuer, trustedHomeserver, "OIDC issuer"));
   const oidcIssuer = issuer.toString();
-  const oidcTokenEndpoint = assertOidcEndpoint(
-    discoveredMetadata.token_endpoint,
-    trustedHomeserver,
-    "OIDC token endpoint",
-    issuer,
-  );
-  const oidcRevocationEndpoint = discoveredMetadata.revocation_endpoint === undefined
-    ? undefined
-    : assertOidcEndpoint(
-        discoveredMetadata.revocation_endpoint,
-        trustedHomeserver,
-        "OIDC revocation endpoint",
-        issuer,
-      );
+  const oidcTokenEndpoint = discoveredMetadata.token_endpoint;
+  const oidcRevocationEndpoint = discoveredMetadata.revocation_endpoint;
 
   const clientId = await withDeadline(
     (requestSignal) => registerClient(discoveredMetadata, {

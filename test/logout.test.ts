@@ -311,6 +311,32 @@ describe("server logout", () => {
     }));
   });
 
+  it("preserves response context for an invalid token refresh response", async () => {
+    const secret = "malformed-refresh-secret";
+    const unknown = exactResponse(LOGOUT_URL, JSON.stringify({ errcode: "M_UNKNOWN_TOKEN" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+    const invalidRefresh = exactResponse(TOKEN_URL, JSON.stringify({
+      access_token: null,
+      refresh_token: secret,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(unknown).mockResolvedValueOnce(invalidRefresh));
+
+    let failure: unknown;
+    try {
+      await requestServerLogout(session);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toHaveProperty("message", "OIDC token refresh failed (HTTP 200)");
+    const detail = (failure as Error).cause as Error;
+    expect(detail.message).toContain('"access_token":"<redacted>"');
+    expect(detail.message).not.toContain(secret);
+    expect(detail.cause).toHaveProperty("message", "OIDC refresh response contained an invalid access token");
+  });
+
   it("accepts invalid_grant only after an exact unknown access-token response", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(exactResponse(LOGOUT_URL, JSON.stringify({ errcode: "M_UNKNOWN_TOKEN" }), {

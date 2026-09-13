@@ -284,7 +284,11 @@ export async function requestServerLogout(
       throw responseBodyFailure("OIDC token refresh", refreshResponse.status, refreshText);
     }
     const refreshBody = parseLogoutJson("OIDC token refresh", refreshResponse.status, refreshText);
-    credentials = refreshedCredentials(credentials, refreshBody);
+    try {
+      credentials = refreshedCredentials(credentials, refreshBody);
+    } catch (error) {
+      throw responseBodyFailure("OIDC token refresh", refreshResponse.status, refreshText, error);
+    }
     if (acceptRefreshedCredentials) {
       onRefreshed?.(credentials as RefreshedLogoutCredentials);
     }
