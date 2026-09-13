@@ -7,7 +7,6 @@ import { pathToFileURL } from "node:url";
 import { Command } from "commander";
 import {
   acquireProfileLock,
-  isCanonicalMatrixUserId,
   profileDir,
   readSession,
   throwWithLockReleaseFailure,
@@ -23,11 +22,18 @@ import { StorageError } from "@telecrypt-io/storage/core";
 import * as core from "@telecrypt-io/storage/core";
 import { loginAndInitialize } from "./loginTransaction.js";
 import { logoutProfile } from "./logout.js";
-import { assertTrustedHomeserver } from "./oidc.js";
 import { cancellationExitCode, installCancellationHandlers } from "./cancellation.js";
 import { scheduleBoundedNormalExit } from "./processExit.js";
 import { readBoundedInput, writeDownload } from "./fileTransfer.js";
 import { readRecoveryKey } from "./recoveryInput.js";
+
+function validateSharedMatrixUserId(userId: string): void {
+  try {
+    core.validateMatrixUserId(userId);
+  } catch (error) {
+    throw new StorageError("shared member must be a valid Matrix user ID", { cause: error });
+  }
+}
 
 // matrix-js-sdk and rust-crypto use the process-global console. Keep their
 // complete diagnostics off stdout, where the CLI's successful machine output
@@ -166,7 +172,7 @@ storage
       try {
         const session = readSession(dir, lock);
         if (!session) throw new StorageError("not logged in");
-        const homeserver = assertTrustedHomeserver(session.homeserver);
+        const homeserver = session.homeserver;
         return {
           json: { userId: session.userId, deviceId: session.deviceId, homeserver },
           text: `${safeOutputField(session.userId)} (device ${safeOutputField(session.deviceId)}) @ ${safeOutputField(homeserver)}`,
@@ -384,7 +390,7 @@ vault
   .option("--role <role>", "viewer or editor", "viewer")
   .action(async (vaultId: string, userId: string, opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
-      if (!isCanonicalMatrixUserId(userId)) throw new StorageError("shared member must be a canonical Matrix user ID");
+      validateSharedMatrixUserId(userId);
       return withProfileStorage(signal, async (opened) => {
         const result = await withCoreDeadline(opened, (operationSignal) => core.shareVault(opened.storage, vaultId, userId, opts.role, { signal: operationSignal }), "vault share");
         return {
@@ -419,7 +425,7 @@ vault
   .description("Remove a participant from a shared vault")
   .action(async (vaultId: string, userId: string, _opts, command: Command) => {
     await runAction(command, async (signal): Promise<CommandResult> => {
-      if (!isCanonicalMatrixUserId(userId)) throw new StorageError("shared member must be a canonical Matrix user ID");
+      validateSharedMatrixUserId(userId);
       return withProfileStorage(signal, async (opened) => {
         const result = await withCoreDeadline(opened, (operationSignal) => core.unshareVault(opened.storage, vaultId, userId, { signal: operationSignal }), "vault unshare");
         return { json: { ...result }, text: `Removed ${safeOutputField(result.userId)} from ${safeOutputField(result.vaultId)}` };

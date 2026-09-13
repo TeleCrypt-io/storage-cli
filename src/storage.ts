@@ -4,9 +4,7 @@ import { TeleCryptIOStorage } from "@telecrypt-io/storage";
 import {
   acquireProfileLock,
   cryptoSnapshotPath,
-  canonicalMatrixServerName,
   isOpaqueValue,
-  isCanonicalMatrixUserId,
   profileDir,
   type ProfileLock,
   readSession,
@@ -16,7 +14,6 @@ import {
 } from "./profile.js";
 import { persistCryptoStore, restoreCryptoStore } from "./cryptoSnapshot.js";
 import { buildTokenRefreshFunction, StorageError } from "@telecrypt-io/storage/core";
-import { assertOidcEndpoint, assertTrustedHomeserver } from "./oidc.js";
 import { commandSignal, settlePromiseWithin } from "./cancellation.js";
 
 const CRYPTO_SNAPSHOT_TIMEOUT_MS = 30_000;
@@ -223,31 +220,6 @@ async function buildStorageForSession(
   lock: ProfileLock,
   signal?: AbortSignal,
 ): Promise<TeleCryptIOStorage> {
-  const matrixServerName = canonicalMatrixServerName(session.userId);
-  if (!isCanonicalMatrixUserId(session.userId) || !matrixServerName || matrixServerName !== session.matrixServerName) {
-    throw new StorageError("persisted Matrix identity does not match its server binding");
-  }
-  const trustedHomeserver = assertTrustedHomeserver(session.homeserver);
-  // These values are resolved during login and persisted so refresh never
-  // performs discovery again. Revalidate every one before constructing the
-  // client: a tampered profile must not redirect bearer credentials or OIDC
-  // requests to another origin or outside the issuer path.
-  const issuer = new URL(assertOidcEndpoint(session.oidcIssuer, trustedHomeserver, "OIDC issuer"));
-  const tokenEndpoint = assertOidcEndpoint(
-    session.oidcTokenEndpoint,
-    trustedHomeserver,
-    "OIDC token endpoint",
-    issuer,
-  );
-  const revocationEndpoint = session.oidcRevocationEndpoint === undefined
-    ? undefined
-    : assertOidcEndpoint(
-        session.oidcRevocationEndpoint,
-        trustedHomeserver,
-        "OIDC revocation endpoint",
-        issuer,
-      );
-
   // OAuth providers may rotate a refresh token once and omit it from a later response. Track the
   // latest persisted token set so a later omission cannot resurrect the pre-rotation token that
   // was present when this CLI process started.
@@ -259,9 +231,11 @@ async function buildStorageForSession(
   };
   const tokenRefreshFunction = buildTokenRefreshFunction(
     {
-      issuer: issuer.toString(),
-      token_endpoint: tokenEndpoint,
-      ...(revocationEndpoint === undefined ? {} : { revocation_endpoint: revocationEndpoint }),
+      issuer: session.oidcIssuer,
+      token_endpoint: session.oidcTokenEndpoint,
+      ...(session.oidcRevocationEndpoint === undefined
+        ? {}
+        : { revocation_endpoint: session.oidcRevocationEndpoint }),
     },
     session.oidcClientId,
     persistRefreshedTokens,
@@ -269,7 +243,7 @@ async function buildStorageForSession(
   );
 
   return TeleCryptIOStorage.createFromOidc({
-    baseUrl: trustedHomeserver,
+    baseUrl: session.homeserver,
     serverName: session.matrixServerName,
     userId: session.userId,
     accessToken: session.accessToken,

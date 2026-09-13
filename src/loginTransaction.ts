@@ -14,7 +14,6 @@ import { initStorageForNewSession } from "./storage.js";
 import { OidcLoginError, runDeviceCodeLogin, type DeviceCodeLoginHooks } from "./oidc.js";
 import { finishRemoteLogout, requestServerLogout } from "./logout.js";
 import { commandSignal } from "./cancellation.js";
-import { withCause } from "./failure.js";
 
 /**
  * Runs authorization, session persistence, and first crypto initialization as
@@ -65,9 +64,13 @@ export async function loginAndInitialize(
           : new StorageError("login initialization failed");
         if (causes.length === 0 && safeFailure !== failure) causes.push(failure);
         if (causes.length > 0) {
-          withCause(
-            safeFailure,
-            causes.length === 1 ? causes[0] : new AggregateError(causes, "login initialization failed"),
+          throw new StorageError(
+            safeFailure.message,
+            {
+              cause: causes.length === 1
+                ? causes[0]
+                : new AggregateError(causes, "login initialization failed"),
+            },
           );
         }
         throw safeFailure;

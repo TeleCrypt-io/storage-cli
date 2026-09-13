@@ -1,4 +1,9 @@
-import { StorageError } from "@telecrypt-io/storage/core";
+import {
+  cancelResponseBody,
+  readResponseBody,
+  ResponseBodyReadError,
+  StorageError,
+} from "@telecrypt-io/storage/core";
 import {
   acquireProfileLock,
   clearProfileUnlocked,
@@ -14,114 +19,47 @@ import {
 } from "./profile.js";
 import type { ProfileLock } from "./profile.js";
 import { assertOidcEndpoint, assertTrustedHomeserver } from "./oidc.js";
-import {
-  commandSignal,
-  readReadableStreamChunkWithAbort,
-  settlePromiseWithin,
-} from "./cancellation.js";
-import { throwCombinedFailures, withCause } from "./failure.js";
+import { commandSignal } from "./cancellation.js";
 import { safeDiagnosticText } from "./output.js";
 
 const DEFAULT_LOGOUT_TIMEOUT_MS = 10_000;
 
-async function cancelLogoutReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
-  const cancellation = Promise.resolve().then(() => reader.cancel());
-  const settlement = await settlePromiseWithin(cancellation);
-  if (settlement.status === "rejected") throw settlement.error;
-  if (settlement.status === "timeout") {
-    throw new StorageError("server logout response cleanup timed out");
-  }
-}
-
-async function cleanupLogoutReader(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  cancel: boolean,
-): Promise<unknown[]> {
-  const failures: unknown[] = [];
-  if (cancel) {
-    try {
-      await cancelLogoutReader(reader);
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  try {
-    reader.releaseLock();
-  } catch (error) {
-    failures.push(error);
-  }
-  return failures;
-}
-
-async function cleanupLogoutResponseBody(response: Response): Promise<unknown[]> {
-  if (!response.body) return [];
-  let reader: ReadableStreamDefaultReader<Uint8Array>;
-  try {
-    reader = response.body.getReader();
-  } catch (error) {
-    return [error];
-  }
-  return cleanupLogoutReader(reader, true);
-}
-
 async function consumeLogoutResponse(
   response: Response,
   readSignal: AbortSignal,
-): Promise<{ value: unknown; text: string } | undefined> {
-  if (!response.body) return undefined;
-  const reader = response.body.getReader();
-  const cancellationError = new StorageError("server logout response read cancelled");
-  const chunks: Uint8Array[] = [];
-  let primaryError: unknown;
-  let hasPrimary = false;
+  operation: string,
+): Promise<string> {
   try {
-    while (true) {
-      const chunk = await readReadableStreamChunkWithAbort(reader, readSignal, cancellationError);
-      if (chunk.done) break;
-      chunks.push(chunk.value);
-    }
+    const body = await readResponseBody(response, readSignal, {
+      abortError: () => new StorageError(`${operation} response read cancelled`),
+    });
+    return new TextDecoder().decode(body.bytes);
   } catch (error) {
-    hasPrimary = true;
-    primaryError = error;
-  }
-  const partialText = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
-  if (hasPrimary) {
-    const bodyDiagnostic = new Error(`server logout response body: ${safeDiagnosticText(partialText)}`);
-    primaryError = withCause(
-      new StorageError("server logout response body could not be read"),
-      new AggregateError(
-        [primaryError, bodyDiagnostic],
-        "server logout response read failed with a partial body",
-        { cause: primaryError },
+    if (!(error instanceof ResponseBodyReadError)) throw error;
+    const partialText = safeDiagnosticText(new TextDecoder().decode(error.bytes));
+    throw new StorageError(`${operation} response body could not be read (HTTP ${response.status})`, {
+      cause: new Error(
+        `${operation} response body: ${partialText || "<empty>"}`,
+        { cause: error.cause },
       ),
-    );
+    });
   }
-  // readReadableStreamChunkWithAbort owns cancellation after a read failure;
-  // this boundary only releases the reader so a cancellation failure is not
-  // attempted (and reported) twice.
-  const cleanupFailures = await cleanupLogoutReader(reader, false);
-  if (!hasPrimary && cleanupFailures.length > 0 && chunks.length > 0) {
-    throw new AggregateError(
-      [...cleanupFailures, new Error(`server logout response body: ${safeDiagnosticText(partialText)}`)],
-      "server logout response cleanup failed",
-    );
-  }
-  if (hasPrimary || cleanupFailures.length > 0) {
-    throwCombinedFailures(primaryError, hasPrimary, cleanupFailures, "server logout response cleanup failed");
-  }
-  if (chunks.length === 0) return undefined;
-  const text = partialText;
+}
+
+function responseBodyFailure(operation: string, status: number, text: string, cause?: unknown): StorageError {
+  return new StorageError(`${operation} failed (HTTP ${status})`, {
+    cause: text === ""
+      ? cause
+      : new Error(`${operation} response body: ${safeDiagnosticText(text)}`, { cause }),
+  });
+}
+
+function parseLogoutJson(operation: string, status: number, text: string): unknown {
+  if (text === "") throw responseBodyFailure(operation, status, text);
   try {
-    return { value: JSON.parse(text) as unknown, text };
+    return JSON.parse(text) as unknown;
   } catch (error) {
-    throw withCause(
-      new StorageError("server logout response is not valid JSON"),
-      new AggregateError(
-        [error, new Error(`server logout response body: ${safeDiagnosticText(text)}`)],
-        "server logout response JSON parse failed",
-        { cause: error },
-      ),
-    );
+    throw responseBodyFailure(operation, status, text, error);
   }
 }
 
@@ -135,16 +73,13 @@ function isUnknownAccessTokenResponse(status: number, body: unknown): boolean {
 }
 
 function localLogoutCleanupError(cause: unknown): StorageError {
-  return withCause(
-    new StorageError("server logout succeeded but local cleanup is incomplete — retry logout"),
-    cause,
-  );
+  return new StorageError("server logout succeeded but local cleanup is incomplete — retry logout", { cause });
 }
 
 function safeLogoutRequestFailure(error: unknown): StorageError {
   const primary = error instanceof AggregateError ? error.errors[0] : undefined;
   const message = primary instanceof StorageError ? primary.message : "server logout request failed";
-  return withCause(new StorageError(message), error);
+  return new StorageError(message, { cause: error });
 }
 
 interface LogoutCredentials {
@@ -253,7 +188,7 @@ export async function requestServerLogout(
   }, timeoutMs);
   const requestLogout = async (
     accessToken: string,
-  ): Promise<{ status: number; body: unknown; bodyText?: string }> => {
+  ): Promise<{ status: number; bodyText: string }> => {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -263,11 +198,11 @@ export async function requestServerLogout(
     if (response.url !== endpoint) {
       const error = new StorageError("server logout redirected unexpectedly");
       controller.abort(error);
-      const cleanupFailures = await cleanupLogoutResponseBody(response);
-      throwCombinedFailures(error, true, cleanupFailures, "server logout response cleanup failed");
+      cancelResponseBody(response);
+      throw error;
     }
-    const consumed = await consumeLogoutResponse(response, controller.signal);
-    return { status: response.status, body: consumed?.value, bodyText: consumed?.text };
+    const bodyText = await consumeLogoutResponse(response, controller.signal, "server logout");
+    return { status: response.status, bodyText };
   };
   const requestOidcRevocation = async (): Promise<void> => {
     const response = await fetch(revocationEndpoint!, {
@@ -284,16 +219,12 @@ export async function requestServerLogout(
     if (response.url !== revocationEndpoint) {
       const error = new StorageError("OIDC revocation redirected unexpectedly");
       controller.abort(error);
-      const cleanupFailures = await cleanupLogoutResponseBody(response);
-      throwCombinedFailures(error, true, cleanupFailures, "server logout response cleanup failed");
-    }
-    const consumed = await consumeLogoutResponse(response, controller.signal);
-    if (response.status !== 200) {
-      const error = new StorageError(`OIDC revocation failed (HTTP ${response.status})`);
-      if (consumed?.text !== undefined) {
-        withCause(error, new Error(`OIDC revocation response body: ${safeDiagnosticText(consumed.text)}`));
-      }
+      cancelResponseBody(response);
       throw error;
+    }
+    const bodyText = await consumeLogoutResponse(response, controller.signal, "OIDC revocation");
+    if (response.status !== 200) {
+      throw responseBodyFailure("OIDC revocation", response.status, bodyText);
     }
   };
   const operation = (async () => {
@@ -304,12 +235,12 @@ export async function requestServerLogout(
     let credentials: LogoutCredentials = session;
     let logoutResponse = await requestLogout(credentials.accessToken);
     if (logoutResponse.status === 200 || logoutResponse.status === 204) return;
-    if (!isUnknownAccessTokenResponse(logoutResponse.status, logoutResponse.body)) {
-      const error = new StorageError(`server logout failed (HTTP ${logoutResponse.status})`);
-      if (logoutResponse.bodyText !== undefined) {
-        withCause(error, new Error(`server logout response body: ${safeDiagnosticText(logoutResponse.bodyText)}`));
-      }
-      throw error;
+    if (logoutResponse.status !== 401) {
+      throw responseBodyFailure("server logout", logoutResponse.status, logoutResponse.bodyText);
+    }
+    const logoutBody = parseLogoutJson("server logout", logoutResponse.status, logoutResponse.bodyText);
+    if (!isUnknownAccessTokenResponse(logoutResponse.status, logoutBody)) {
+      throw responseBodyFailure("server logout", logoutResponse.status, logoutResponse.bodyText);
     }
 
     if (!credentials.refreshToken) return;
@@ -336,37 +267,30 @@ export async function requestServerLogout(
     if (refreshResponse.url !== tokenEndpoint) {
       const error = new StorageError("OIDC token refresh redirected unexpectedly");
       controller.abort(error);
-      const cleanupFailures = await cleanupLogoutResponseBody(refreshResponse);
-      throwCombinedFailures(error, true, cleanupFailures, "server logout response cleanup failed");
-    }
-    const consumedRefresh = await consumeLogoutResponse(refreshResponse, controller.signal);
-    const refreshBody = consumedRefresh?.value;
-    if (
-      refreshResponse.status === 400 &&
-      refreshBody &&
-      typeof refreshBody === "object" &&
-      (refreshBody as { error?: unknown }).error === "invalid_grant"
-    ) {
-      return;
-    }
-    if (refreshResponse.status !== 200) {
-      const error = new StorageError(`OIDC token refresh failed (HTTP ${refreshResponse.status})`);
-      if (consumedRefresh?.text !== undefined) {
-        withCause(error, new Error(`OIDC token refresh response body: ${safeDiagnosticText(consumedRefresh.text)}`));
-      }
+      cancelResponseBody(refreshResponse);
       throw error;
     }
+    const refreshText = await consumeLogoutResponse(refreshResponse, controller.signal, "OIDC token refresh");
+    if (refreshResponse.status === 400 && refreshText !== "") {
+      try {
+        const body = JSON.parse(refreshText) as unknown;
+        if (body && typeof body === "object" &&
+            (body as { error?: unknown }).error === "invalid_grant") return;
+      } catch {
+        // The ordinary HTTP error below includes the malformed body and status.
+      }
+    }
+    if (refreshResponse.status !== 200) {
+      throw responseBodyFailure("OIDC token refresh", refreshResponse.status, refreshText);
+    }
+    const refreshBody = parseLogoutJson("OIDC token refresh", refreshResponse.status, refreshText);
     credentials = refreshedCredentials(credentials, refreshBody);
     if (acceptRefreshedCredentials) {
       onRefreshed?.(credentials as RefreshedLogoutCredentials);
     }
     logoutResponse = await requestLogout(credentials.accessToken);
     if (logoutResponse.status !== 200 && logoutResponse.status !== 204) {
-      const error = new StorageError(`server logout failed (HTTP ${logoutResponse.status})`);
-      if (logoutResponse.bodyText !== undefined) {
-        withCause(error, new Error(`server logout response body: ${safeDiagnosticText(logoutResponse.bodyText)}`));
-      }
-      throw error;
+      throw responseBodyFailure("server logout", logoutResponse.status, logoutResponse.bodyText);
     }
   })();
   try {
@@ -379,7 +303,7 @@ export async function requestServerLogout(
       throw boundaryError;
     }
     if (externalSignal?.aborted) {
-      throw withCause(new StorageError("server logout cancelled"), error);
+      throw new StorageError("server logout cancelled", { cause: error });
     }
     if (error instanceof StorageError) throw error;
     throw safeLogoutRequestFailure(error);
@@ -389,7 +313,6 @@ export async function requestServerLogout(
     externalSignal?.removeEventListener("abort", onExternalAbort);
   }
 }
-
 export interface LogoutResult {
   hadSession: boolean;
   serverLogout: "revoked" | "not-needed";

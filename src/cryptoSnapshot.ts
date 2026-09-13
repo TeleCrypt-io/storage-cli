@@ -34,7 +34,7 @@ import {
   writePrivateFile,
   type ProfileLock,
 } from "./profile.js";
-import { attemptCleanup, throwCombinedFailures, withCause } from "./failure.js";
+import { attemptCleanup, throwCombinedFailures } from "./failure.js";
 
 interface IndexSpec {
   name: string;
@@ -374,7 +374,7 @@ export function loadSnapshotFromDisk(path: string, heldLock?: ProfileLock): Cryp
   try {
     snapshot = v8.deserialize(buf) as CryptoSnapshot;
   } catch (error) {
-    throw withCause(new Error("crypto snapshot is unreadable; remove it and retry"), error);
+    throw new Error("crypto snapshot is unreadable; remove it and retry", { cause: error });
   }
   return snapshot;
 }

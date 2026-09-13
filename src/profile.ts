@@ -2,8 +2,8 @@ import fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
+import { assertOidcEndpoint, validateCanonicalMatrixUserId, validateMatrixDeviceId } from "@telecrypt-io/storage/core";
 import { expectedMatrixServerName } from "./topology.js";
-import { withCause } from "./failure.js";
 
 export { expectedMatrixServerName } from "./topology.js";
 
@@ -42,121 +42,17 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
-function isPersistedOidcUrl(value: unknown): value is string {
-  if (
-    !isNonEmptyString(value) ||
-    value !== value.trim() ||
-    /[\s\u0000-\u001f\u007f-\u009f]/u.test(value)
-  ) {
-    return false;
-  }
-  try {
-    const parsed = new URL(value);
-    return (
-      (parsed.protocol === "https:" ||
-        (parsed.protocol === "http:" &&
-          (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]"))) &&
-      parsed.username === "" &&
-      parsed.password === "" &&
-      parsed.search === "" &&
-      parsed.hash === ""
-    );
-  } catch {
-    return false;
-  }
-}
-
 function isPersistedOidcBinding(value: unknown, homeserver: unknown, issuer?: string): value is string {
-  if (!isPersistedOidcUrl(value) || !isNonEmptyString(homeserver)) return false;
+  if (!isNonEmptyString(value) || !isNonEmptyString(homeserver)) return false;
   try {
-    const endpoint = new URL(value);
-    const home = new URL(homeserver);
-    if (endpoint.origin !== home.origin) return false;
-    if (issuer === undefined) return true;
-    const issuerUrl = new URL(issuer);
-    if (endpoint.origin !== issuerUrl.origin) return false;
-    if (issuerUrl.pathname === "/") return true;
-    const prefix = issuerUrl.pathname.endsWith("/") ? issuerUrl.pathname : `${issuerUrl.pathname}/`;
-    return endpoint.pathname === issuerUrl.pathname || endpoint.pathname.startsWith(prefix);
+    const trustedIssuer = issuer === undefined
+      ? undefined
+      : new URL(assertOidcEndpoint(issuer, homeserver, "OIDC issuer"));
+    assertOidcEndpoint(value, homeserver, "OIDC endpoint", trustedIssuer);
+    return true;
   } catch {
     return false;
   }
-}
-
-export const MAX_MATRIX_USER_ID_BYTES = 255;
-
-export function isCanonicalMatrixServerName(value: unknown): value is string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    Buffer.byteLength(value, "utf8") > MAX_MATRIX_USER_ID_BYTES ||
-    value !== value.toLowerCase() ||
-    /[\s\u0000-\u001f\u007f-\u009f]/u.test(value)
-  ) {
-    return false;
-  }
-
-  let host = value;
-  let port: string | undefined;
-  if (value.startsWith("[")) {
-    const end = value.indexOf("]");
-    if (end <= 1) return false;
-    host = value.slice(0, end + 1);
-    if (value.length > end + 1) {
-      if (value[end + 1] !== ":") return false;
-      port = value.slice(end + 2);
-    }
-    try {
-      const parsed = new URL(`https://${host}${port === undefined ? "" : `:${port}`}/`);
-      if (parsed.hostname !== host || parsed.host !== value) return false;
-    } catch {
-      return false;
-    }
-  } else {
-    const colon = value.lastIndexOf(":");
-    if (colon >= 0) {
-      if (value.indexOf(":") !== colon) return false;
-      host = value.slice(0, colon);
-      port = value.slice(colon + 1);
-    }
-    if (host.length === 0 || host.length > 253) return false;
-    const labels = host.split(".");
-    if (
-      labels.some(
-        (label) =>
-          label.length === 0 ||
-          label.length > 63 ||
-          !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(label),
-      )
-    ) {
-      return false;
-    }
-  }
-
-  if (port !== undefined) {
-    if (!/^(?:[1-9][0-9]{0,4})$/u.test(port)) return false;
-    const numericPort = Number(port);
-    if (numericPort < 1 || numericPort > 65535 || String(numericPort) !== port) return false;
-  }
-  return true;
-}
-
-export function canonicalMatrixServerName(userId: string): string | null {
-  const separator = userId.indexOf(":", 1);
-  if (separator <= 1 || separator === userId.length - 1) return null;
-  return userId.slice(separator + 1);
-}
-
-export function isCanonicalMatrixUserId(value: unknown): value is string {
-  if (
-    typeof value !== "string" ||
-    Buffer.byteLength(value, "utf8") > MAX_MATRIX_USER_ID_BYTES ||
-    !/^@[a-z0-9._=+\/-]+:[^\s\u0000-\u001f\u007f-\u009f]+$/u.test(value)
-  ) {
-    return false;
-  }
-  const serverName = canonicalMatrixServerName(value);
-  return serverName !== null && isCanonicalMatrixServerName(serverName);
 }
 
 export function isOpaqueValue(value: unknown): value is string {
@@ -166,8 +62,22 @@ export function isOpaqueValue(value: unknown): value is string {
   );
 }
 
-function isMatrixUserId(value: unknown): value is string {
-  return isCanonicalMatrixUserId(value);
+function isMatrixUserId(value: unknown, serverName: unknown): value is string {
+  try {
+    validateCanonicalMatrixUserId(value, serverName);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isMatrixDeviceId(value: unknown): value is string {
+  try {
+    validateMatrixDeviceId(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isValidSession(value: unknown): value is Session {
@@ -175,11 +85,10 @@ function isValidSession(value: unknown): value is Session {
   const session = value as Partial<Session>;
   return (
     isNonEmptyString(session.homeserver) &&
-    isMatrixUserId(session.userId) &&
+    isMatrixUserId(session.userId, session.matrixServerName) &&
     isOpaqueValue(session.matrixServerName) &&
-    session.matrixServerName === canonicalMatrixServerName(session.userId) &&
     expectedMatrixServerName(session.homeserver) === session.matrixServerName &&
-    isOpaqueValue(session.deviceId) &&
+    isMatrixDeviceId(session.deviceId) &&
     isOpaqueValue(session.accessToken) &&
     isPersistedOidcBinding(session.oidcIssuer, session.homeserver) &&
     isOpaqueValue(session.refreshToken) &&
@@ -195,7 +104,7 @@ export function isValidPendingSession(value: unknown): value is PendingSession {
   const pending = value as Partial<PendingSession>;
   return (
     isNonEmptyString(pending.homeserver) &&
-    isOpaqueValue(pending.deviceId) &&
+    isMatrixDeviceId(pending.deviceId) &&
     isOpaqueValue(pending.accessToken) &&
     isPersistedOidcBinding(pending.oidcIssuer, pending.homeserver) &&
     (pending.refreshToken === undefined ||
@@ -207,12 +116,11 @@ export function isValidPendingSession(value: unknown): value is PendingSession {
       isPersistedOidcBinding(pending.oidcTokenEndpoint, pending.homeserver, pending.oidcIssuer)) &&
     (pending.oidcRevocationEndpoint === undefined ||
       isPersistedOidcBinding(pending.oidcRevocationEndpoint, pending.homeserver, pending.oidcIssuer)) &&
-    isCanonicalMatrixServerName(pending.matrixServerName) &&
+    isNonEmptyString(pending.matrixServerName) &&
     expectedMatrixServerName(pending.homeserver) === pending.matrixServerName &&
     (pending.userId === undefined ||
-      (isMatrixUserId(pending.userId) &&
-        isOpaqueValue(pending.matrixServerName) &&
-        pending.matrixServerName === canonicalMatrixServerName(pending.userId)))
+      (isMatrixUserId(pending.userId, pending.matrixServerName) &&
+        isOpaqueValue(pending.matrixServerName)))
   );
 }
 
@@ -510,7 +418,7 @@ export function readSession(
   try {
     parsed = JSON.parse(bytes.toString("utf8")) as Partial<Session>;
   } catch (error) {
-    throw withCause(new Error("profile session is not valid JSON; log in again"), error);
+    throw new Error("profile session is not valid JSON; log in again", { cause: error });
   }
   if (!isValidSession(parsed)) {
     throw new Error("profile session is not a valid OIDC/MAS session; log in again");
@@ -528,7 +436,7 @@ export function readPendingSession(
   try {
     parsed = JSON.parse(bytes.toString("utf8"));
   } catch (error) {
-    throw withCause(new Error("pending login state is not valid JSON; inspect it before retrying"), error);
+    throw new Error("pending login state is not valid JSON; inspect it before retrying", { cause: error });
   }
   if (!isValidPendingSession(parsed)) {
     throw new Error("pending login state is invalid; inspect it before retrying");

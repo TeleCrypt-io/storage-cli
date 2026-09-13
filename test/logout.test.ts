@@ -57,7 +57,7 @@ describe("server logout", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(requestServerLogout({ ...session, homeserver: "http://backend.telecrypt.io" })).rejects.toThrow(
-      "must use HTTPS except for the exact loopback host",
+      "homeserver is not a supported TeleCrypt deployment",
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -166,31 +166,23 @@ describe("server logout", () => {
     );
   });
 
-  it("bounds cleanup of an acquired redirected response body", async () => {
-    vi.useFakeTimers();
-    try {
-      let cancelCalled = false;
-      const body = new ReadableStream<Uint8Array>({
-        cancel: () => {
-          cancelCalled = true;
-          return new Promise<void>(() => {});
-        },
-      });
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(
-        "https://backend.telecrypt.io/redirect",
-        body,
-        { status: 302 },
-      )));
+  it("discards a redirected response body without waiting for stream cleanup", async () => {
+    let cancelCalled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel: () => {
+        cancelCalled = true;
+        return new Promise<void>(() => {});
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(
+      "https://backend.telecrypt.io/redirect",
+      body,
+      { status: 302 },
+    )));
 
-      const pending = requestServerLogout(session);
-      const failure = expect(pending).rejects.toThrow("server logout redirected unexpectedly");
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(5_000);
-      await failure;
-      expect(cancelCalled).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
+    await expect(requestServerLogout(session)).rejects.toThrow("server logout redirected unexpectedly");
+    await Promise.resolve();
+    expect(cancelCalled).toBe(true);
   });
 
   it("surfaces HTTP failure without exposing the token", async () => {
@@ -223,23 +215,60 @@ describe("server logout", () => {
     expect(((failure as Error).cause as Error).message).not.toContain("alice@example.test");
   });
 
-  it("retains malformed response JSON as the parse cause", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, "not-json", { status: 200 })));
+  it("reports an HTML gateway failure with its status and sanitized body", async () => {
+    const secret = "html-access-secret";
+    const html = `<html><title>Bad Gateway</title><p>access_token=${secret}</p><p>alice@example.test</p></html>`;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, html, {
+      status: 502,
+      headers: { "content-type": "text/html" },
+    })));
 
     let failure: unknown;
     try {
-      await requestServerLogout(session);
+      await requestServerLogout({ ...session, refreshToken: undefined });
     } catch (error) {
       failure = error;
     }
 
-    expect(failure).toHaveProperty("message", "server logout response is not valid JSON");
-    expect(failure).toHaveProperty("cause");
-    expect((failure as Error).cause).toBeInstanceOf(AggregateError);
-    expect(((failure as Error).cause as AggregateError).errors[0]).toBeInstanceOf(SyntaxError);
-    expect(((failure as Error).cause as AggregateError).errors[1]).toMatchObject({
-      message: "server logout response body: not-json",
+    expect(failure).toHaveProperty("message", "server logout failed (HTTP 502)");
+    const detail = (failure as Error).cause as Error;
+    expect(detail.message).toContain("Bad Gateway");
+    expect(detail.message).not.toContain(secret);
+    expect(detail.message).not.toContain("alice@example.test");
+  });
+
+  it("keeps partial body bytes when logout response reading fails", async () => {
+    const secret = "partial-access-secret";
+    let sent = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!sent) {
+          sent = true;
+          controller.enqueue(new TextEncoder().encode(`access_token=${secret} upstream reset`));
+          return;
+        }
+        controller.error(new Error("socket reset"));
+      },
     });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, body, { status: 502 })));
+
+    let failure: unknown;
+    try {
+      await requestServerLogout({ ...session, refreshToken: undefined });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toHaveProperty("message", "server logout response body could not be read (HTTP 502)");
+    const detail = (failure as Error).cause as Error;
+    expect(detail.message).toContain("upstream reset");
+    expect(detail.message).not.toContain(secret);
+  });
+
+  it("accepts a successful logout response without parsing its body", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(exactResponse(LOGOUT_URL, "not-json", { status: 200 })));
+
+    await expect(requestServerLogout(session)).resolves.toBeUndefined();
   });
 
   it("treats Matrix's explicit unknown token as final only when no refresh grant remains", async () => {
@@ -323,7 +352,7 @@ describe("server logout", () => {
     }
   });
 
-  it("abort-races a logout response body and bounds reader cancellation", async () => {
+  it("cancels a stalled logout body when the request deadline expires", async () => {
     vi.useFakeTimers();
     try {
       let cancelCalled = false;
@@ -340,11 +369,7 @@ describe("server logout", () => {
       await vi.advanceTimersByTimeAsync(10);
       await failure;
       expect(cancelCalled).toBe(true);
-
-      await vi.advanceTimersByTimeAsync(5_000);
       expect(vi.getTimerCount()).toBe(0);
-      const releasedReader = body.getReader();
-      releasedReader.releaseLock();
     } finally {
       vi.useRealTimers();
     }
@@ -369,7 +394,6 @@ describe("server logout", () => {
       await vi.advanceTimersByTimeAsync(0);
       const failure = expect(pending).rejects.toThrow("server logout request timed out");
       await vi.advanceTimersByTimeAsync(10);
-      await vi.advanceTimersByTimeAsync(5_000);
       await failure;
 
       resolveRefresh(exactResponse(TOKEN_URL, JSON.stringify({ access_token: "too-late" }), {

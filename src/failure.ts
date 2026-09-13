@@ -17,13 +17,3 @@ export function attemptCleanup(cleanupFailures: unknown[], cleanup: () => void):
     cleanupFailures.push(error);
   }
 }
-
-export function withCause<T extends Error>(error: T, cause: unknown): T {
-  Object.defineProperty(error, "cause", {
-    configurable: true,
-    enumerable: false,
-    value: cause,
-    writable: true,
-  });
-  return error;
-}

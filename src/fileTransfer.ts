@@ -2,7 +2,6 @@ import fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { MAX_MEDIA_FILE_BYTES, StorageError } from "@telecrypt-io/storage/core";
-import { withCause } from "./failure.js";
 
 /** Read an upload input, enforcing the product's media-size limit. */
 export function readBoundedInput(filePath: string): Buffer {
@@ -19,7 +18,7 @@ export function readBoundedInput(filePath: string): Buffer {
     return bytes;
   } catch (error) {
     if (error instanceof StorageError) throw error;
-    throw withCause(new StorageError("input file could not be opened"), error);
+    throw new StorageError("input file could not be opened", { cause: error });
   }
 }
 
@@ -45,7 +44,7 @@ export function writeDownload(destination: string, bytes: Uint8Array): void {
     }
   } catch (error) {
     if (error instanceof StorageError) throw error;
-    throw withCause(new StorageError("download could not be written"), error);
+    throw new StorageError("download could not be written", { cause: error });
   } finally {
     fs.rmSync(temporary, { force: true });
   }

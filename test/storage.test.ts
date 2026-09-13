@@ -73,7 +73,7 @@ describe("OIDC session refresh persistence", () => {
     expect(() => withRefreshedTokens(SESSION, { accessToken: "access-next", refreshToken: "bad refresh" })).toThrow(/invalid token/);
   });
 
-  it("rejects a tampered cross-origin refresh endpoint before opening storage", async () => {
+  it("lets the SDK reject a cross-origin refresh endpoint before storage starts", async () => {
     const dir = fixtureDirectory("telecrypt-oidc-endpoint-test");
     await expect(
       initStorageForNewSession(
@@ -84,7 +84,7 @@ describe("OIDC session refresh persistence", () => {
         },
         dir,
       ),
-    ).rejects.toThrow(/OIDC token endpoint.*configured OIDC origin/);
+    ).rejects.toThrow(/OIDC token endpoint/);
   });
 
   it("releases its owned profile fence when new-session initialization fails", async () => {

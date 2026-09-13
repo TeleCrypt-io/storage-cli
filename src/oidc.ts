@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
+  assertOidcEndpoint,
   discoverOidcIssuer,
   registerClient,
   startDeviceCodeLogin,
@@ -15,16 +16,10 @@ import {
   whoAmI,
   StorageError,
 } from "@telecrypt-io/storage/core";
-import type { OidcClientConfig } from "@telecrypt-io/storage/core";
-import {
-  canonicalMatrixServerName,
-  isCanonicalMatrixUserId,
-  type PendingSession,
-  type Session,
-} from "./profile.js";
-import { withCause } from "./failure.js";
+export { assertOidcEndpoint };
+import type { PendingSession, Session } from "./profile.js";
 import { settlePromiseWithin } from "./cancellation.js";
-import { expectedMatrixServerName, isExactLoopbackHost } from "./topology.js";
+import { expectedMatrixServerName } from "./topology.js";
 
 /** Carries the exact bearer credentials that must be revoked when a device
  * grant succeeded but the CLI could not finish identity verification or
@@ -32,8 +27,8 @@ import { expectedMatrixServerName, isExactLoopbackHost } from "./topology.js";
 export class OidcLoginError extends StorageError {
   readonly pendingSession: PendingSession;
 
-  constructor(message: string, pendingSession: PendingSession) {
-    super(message);
+  constructor(message: string, pendingSession: PendingSession, options?: ErrorOptions) {
+    super(message, options);
     this.name = "OidcLoginError";
     this.pendingSession = pendingSession;
   }
@@ -41,79 +36,6 @@ export class OidcLoginError extends StorageError {
 
 const OIDC_REQUEST_TIMEOUT_MS = 30_000;
 const OIDC_APPROVAL_TIMEOUT_MS = 5 * 60_000;
-// The Matrix OIDC discovery client touches browser storage even in Node. Keep
-// this shim scoped to discovery: a permanent global window breaks the SDK's
-// Node crypto/runtime feature detection. The abort listener removes it even
-// if discovery's body reader ignores cancellation and outlives the deadline.
-class OidcMemoryStorage implements Storage {
-  private readonly values = new Map<string, string>();
-
-  get length(): number {
-    return this.values.size;
-  }
-
-  clear(): void {
-    this.values.clear();
-  }
-
-  getItem(key: string): string | null {
-    return this.values.get(String(key)) ?? null;
-  }
-
-  key(index: number): string | null {
-    return [...this.values.keys()][index] ?? null;
-  }
-
-  removeItem(key: string): void {
-    this.values.delete(String(key));
-  }
-
-  setItem(key: string, value: string): void {
-    this.values.set(String(key), String(value));
-  }
-}
-
-async function withOidcWindowStorage<T>(
-  operation: () => Promise<T>,
-  signal?: AbortSignal,
-): Promise<T> {
-  const globalObject = globalThis as unknown as Record<string, unknown>;
-  const hadWindow = Object.prototype.hasOwnProperty.call(globalObject, "window");
-  if (!hadWindow) {
-    globalObject.window = {
-      sessionStorage: new OidcMemoryStorage(),
-      localStorage: new OidcMemoryStorage(),
-    };
-  }
-  const restore = (): void => {
-    signal?.removeEventListener("abort", restore);
-    if (!hadWindow) delete globalObject.window;
-  };
-  signal?.addEventListener("abort", restore, { once: true });
-  try {
-    return await operation();
-  } finally {
-    restore();
-  }
-}
-
-function requireOpaqueValue(value: unknown, name: string): string {
-  if (
-    typeof value !== "string" ||
-    value.trim() === "" ||
-    /[\s\u0000-\u001f\u007f-\u009f]/u.test(value)
-  ) {
-    throw new StorageError(`${name} is invalid`);
-  }
-  return value;
-}
-
-function requireUserId(value: unknown): string {
-  const userId = requireOpaqueValue(value, "OIDC user ID");
-  if (!isCanonicalMatrixUserId(userId)) throw new StorageError("OIDC identity verification failed");
-  return userId;
-}
-
 function deviceAccessError(error: unknown): string {
   return typeof error === "string" && error
     ? `device login was not approved (${error})`
@@ -184,73 +106,12 @@ async function withDeadline<T>(
   }
 }
 
-function parseOidcUrl(value: unknown, name: string, allowQuery = false, canonical = true): URL {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new StorageError(`${name} must be a non-empty URL`);
-  }
-  if (/[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
-    throw new StorageError(`${name} contains invalid control characters`);
-  }
-
-  if (value !== value.trim()) {
-    throw new StorageError(`${name} must not have surrounding whitespace`);
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new StorageError(`${name} must be a valid URL`);
-  }
-
-  if (
-    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-    parsed.username !== "" ||
-    parsed.password !== "" ||
-    (!allowQuery && parsed.search !== "") ||
-    parsed.hash !== "" ||
-    (canonical &&
-      parsed.toString() !== value &&
-      !(parsed.pathname === "/" && parsed.toString() === `${value}/`))
-  ) {
-    throw new StorageError(`${name} must be a canonical HTTP(S) URL without credentials, queries, or fragments`);
-  }
-  if (parsed.protocol === "http:" && !isExactLoopbackHost(parsed.hostname)) {
-    throw new StorageError(`${name} must use HTTPS except for the exact loopback host`);
-  }
-  return parsed;
-}
-
-/** Validates the user-supplied homeserver before any discovery request. */
+/** Validates the user-supplied homeserver against the supported TeleCrypt deployments. */
 export function assertTrustedHomeserver(value: unknown): string {
-  parseOidcUrl(value, "homeserver", false, false);
-  const homeserver = value as string;
-  if (!expectedMatrixServerName(homeserver)) {
+  if (typeof value !== "string" || !expectedMatrixServerName(value)) {
     throw new StorageError("homeserver is not a supported TeleCrypt deployment");
   }
-  return homeserver;
-}
-
-function isWithinIssuerPath(issuer: URL, endpoint: URL): boolean {
-  if (issuer.pathname === "/") return true;
-  const prefix = issuer.pathname.endsWith("/") ? issuer.pathname : `${issuer.pathname}/`;
-  return endpoint.pathname === issuer.pathname || endpoint.pathname.startsWith(prefix);
-}
-
-/** Validates an OIDC endpoint before registration, authorization, or refresh tokens are sent. */
-export function assertOidcEndpoint(
-  value: unknown,
-  trustedHomeserver: string,
-  name: string,
-  issuer?: URL,
-  allowQuery = false,
-): string {
-  const homeserver = parseOidcUrl(trustedHomeserver, "homeserver", false, false);
-  const endpoint = parseOidcUrl(value, name, allowQuery);
-  if (endpoint.origin !== homeserver.origin || (issuer && !isWithinIssuerPath(issuer, endpoint))) {
-    throw new StorageError(`${name} must remain on the configured OIDC origin and issuer path`);
-  }
-  return endpoint.toString();
+  return value;
 }
 
 function assertSafeVerificationUri(
@@ -259,42 +120,7 @@ function assertSafeVerificationUri(
   name: string,
   issuer: URL,
 ): string {
-  const endpoint = new URL(assertOidcEndpoint(value, trustedHomeserver, name, issuer, true));
-  for (const [key, queryValue] of endpoint.searchParams) {
-    // The device-code page may carry a user code, but it must not turn the
-    // CLI's trusted browser launch into an open redirect or nested URL.
-    if (/(?:^|_)(?:redirect|return|next|continue)(?:$|_)/iu.test(key) || /^(?:https?:)?\/\//iu.test(queryValue)) {
-      throw new StorageError(`${name} contains an unsafe redirect parameter`);
-    }
-  }
-  return endpoint.toString();
-}
-
-/** Validates every OIDC URL the CLI will use before dynamic registration. */
-export function validateOidcMetadata(metadata: OidcClientConfig, homeserver: string): OidcClientConfig {
-  const trustedHomeserver = parseOidcUrl(homeserver, "homeserver", false, false);
-  const issuer = parseOidcUrl(metadata.issuer, "OIDC issuer");
-  if (issuer.origin !== trustedHomeserver.origin) {
-    throw new StorageError("OIDC issuer must remain on the configured homeserver origin");
-  }
-
-  const endpoints: Array<[string, unknown]> = [
-    ["OIDC authorization endpoint", metadata.authorization_endpoint],
-    ["OIDC device authorization endpoint", metadata.device_authorization_endpoint],
-    ["OIDC registration endpoint", metadata.registration_endpoint],
-    ["OIDC token endpoint", metadata.token_endpoint],
-  ];
-  if (metadata.revocation_endpoint !== undefined) {
-    endpoints.push(["OIDC revocation endpoint", metadata.revocation_endpoint]);
-  }
-  for (const [name, endpoint] of endpoints) {
-    assertOidcEndpoint(endpoint, homeserver, name, issuer);
-  }
-  const metadataWithOptionalJwks = metadata as OidcClientConfig & { jwks_uri?: unknown };
-  if (metadataWithOptionalJwks.jwks_uri !== undefined) {
-    assertOidcEndpoint(metadataWithOptionalJwks.jwks_uri, homeserver, "OIDC JWKS endpoint", issuer);
-  }
-  return metadata;
+  return assertOidcEndpoint(value, trustedHomeserver, name, issuer, true);
 }
 
 /** Generates a device ID the same shape matrix-js-sdk itself would (short
@@ -354,39 +180,32 @@ export async function runDeviceCodeLogin(
   signal?: AbortSignal,
 ): Promise<Session> {
   const trustedHomeserver = assertTrustedHomeserver(homeserver);
-  const trustedMatrixServerName = expectedMatrixServerName(trustedHomeserver);
-  if (!trustedMatrixServerName) {
-    throw new StorageError("homeserver is not a supported TeleCrypt deployment");
-  }
+  const trustedMatrixServerName = expectedMatrixServerName(trustedHomeserver)!;
   const discoveredMetadata = await withDeadline(
-    (requestSignal) => withOidcWindowStorage(
-      () => discoverOidcIssuer(trustedHomeserver, requestSignal),
-      requestSignal,
-    ),
+    (requestSignal) => discoverOidcIssuer(trustedHomeserver, requestSignal),
     "OIDC discovery",
     OIDC_REQUEST_TIMEOUT_MS,
     signal,
   );
-  const authMetadata = validateOidcMetadata(discoveredMetadata, trustedHomeserver);
-  const issuer = parseOidcUrl(authMetadata.issuer, "OIDC issuer");
+  const issuer = new URL(assertOidcEndpoint(discoveredMetadata.issuer, trustedHomeserver, "OIDC issuer"));
   const oidcIssuer = issuer.toString();
   const oidcTokenEndpoint = assertOidcEndpoint(
-    authMetadata.token_endpoint,
+    discoveredMetadata.token_endpoint,
     trustedHomeserver,
     "OIDC token endpoint",
     issuer,
   );
-  const oidcRevocationEndpoint = authMetadata.revocation_endpoint === undefined
+  const oidcRevocationEndpoint = discoveredMetadata.revocation_endpoint === undefined
     ? undefined
     : assertOidcEndpoint(
-        authMetadata.revocation_endpoint,
+        discoveredMetadata.revocation_endpoint,
         trustedHomeserver,
         "OIDC revocation endpoint",
         issuer,
       );
 
-  const clientId = requireOpaqueValue(await withDeadline(
-    (requestSignal) => registerClient(authMetadata, {
+  const clientId = await withDeadline(
+    (requestSignal) => registerClient(discoveredMetadata, {
       clientName: "TeleCrypt.io CLI",
       clientUri: "https://telecrypt.io/",
       applicationType: "native",
@@ -401,11 +220,11 @@ export async function runDeviceCodeLogin(
     "OIDC client registration",
     OIDC_REQUEST_TIMEOUT_MS,
     signal,
-  ), "OIDC client ID");
+  );
 
   const deviceId = generateDeviceId();
   const session = await withDeadline(
-    (requestSignal) => startDeviceCodeLogin(authMetadata, clientId, deviceId, requestSignal),
+    (requestSignal) => startDeviceCodeLogin(discoveredMetadata, clientId, deviceId, requestSignal),
     "OIDC device authorization",
     OIDC_REQUEST_TIMEOUT_MS,
     signal,
@@ -425,9 +244,6 @@ export async function runDeviceCodeLogin(
         issuer,
       )
     : undefined;
-  if (typeof session.user_code !== "string" || session.user_code.trim() === "") {
-    throw new StorageError("OIDC user code must be a non-empty string");
-  }
   hooks.onVerification({
     verificationUri,
     verificationUriComplete,
@@ -438,18 +254,13 @@ export async function runDeviceCodeLogin(
   }
 
   const result = await withDeadline(
-    (requestSignal) => waitForDeviceCodeLogin(authMetadata, clientId, session, requestSignal),
+    (requestSignal) => waitForDeviceCodeLogin(discoveredMetadata, clientId, session, requestSignal),
     "OIDC approval",
     OIDC_APPROVAL_TIMEOUT_MS,
     signal,
     (lateResult, boundaryError) => {
       if (isDeviceAccessTokenError(lateResult)) return boundaryError;
-      let lateAccessToken: string;
-      try {
-        lateAccessToken = requireOpaqueValue(lateResult.access_token, "OIDC access token");
-      } catch {
-        return boundaryError;
-      }
+      const lateAccessToken = lateResult.access_token;
       const pending: PendingSession = {
         homeserver: trustedHomeserver,
         deviceId,
@@ -460,20 +271,14 @@ export async function runDeviceCodeLogin(
         oidcRevocationEndpoint,
         matrixServerName: trustedMatrixServerName,
       };
-      if (lateResult.refresh_token) {
-        try {
-          pending.refreshToken = requireOpaqueValue(lateResult.refresh_token, "OIDC refresh token");
-        } catch {
-          // The access token remains revocable even when the refresh field is malformed.
-        }
-      }
+      if (lateResult.refresh_token) pending.refreshToken = lateResult.refresh_token;
       return new OidcLoginError(boundaryError.message, pending);
     },
   );
   if (isDeviceAccessTokenError(result)) {
     throw new StorageError(deviceAccessError(result.error));
   }
-  const accessToken = requireOpaqueValue(result.access_token, "OIDC access token");
+  const accessToken = result.access_token;
   const pending: PendingSession = {
     homeserver: trustedHomeserver,
     deviceId,
@@ -487,12 +292,7 @@ export async function runDeviceCodeLogin(
   if (!result.refresh_token) {
     throw new OidcLoginError("device login returned no refresh token", pending);
   }
-  let refreshToken: string;
-  try {
-    refreshToken = requireOpaqueValue(result.refresh_token, "OIDC refresh token");
-  } catch (error) {
-    throw new OidcLoginError(error instanceof Error ? error.message : "OIDC refresh token is invalid", pending);
-  }
+  const refreshToken = result.refresh_token;
   pending.refreshToken = refreshToken;
 
   // Once the token endpoint has issued a bearer token, every later failure
@@ -508,17 +308,13 @@ export async function runDeviceCodeLogin(
       OIDC_REQUEST_TIMEOUT_MS,
       signal,
     );
-    const userId = requireUserId(who.userId);
-    const matrixServerName = canonicalMatrixServerName(userId);
-    if (!matrixServerName || matrixServerName !== trustedMatrixServerName) {
-      throw new StorageError("OIDC identity does not match the configured TeleCrypt deployment");
-    }
+    const userId = who.userId;
+    const matrixServerName = trustedMatrixServerName;
     pending.userId = userId;
     pending.matrixServerName = matrixServerName;
-    if (typeof who.deviceId !== "string" || who.deviceId !== deviceId) {
+    if (who.deviceId !== deviceId) {
       throw new StorageError("OIDC identity verification failed");
     }
-    requireOpaqueValue(who.deviceId, "OIDC device ID");
 
     return {
       homeserver: trustedHomeserver,
@@ -535,6 +331,6 @@ export async function runDeviceCodeLogin(
   } catch (error) {
     if (error instanceof OidcLoginError) throw error;
     const message = error instanceof Error ? error.message : "OIDC identity verification failed";
-    throw withCause(new OidcLoginError(message, pending), error);
+    throw new OidcLoginError(message, pending, { cause: error });
   }
 }

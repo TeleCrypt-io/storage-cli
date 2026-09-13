@@ -10,7 +10,6 @@ import {
   acquireProfileLock,
   cryptoSnapshotPath,
   expectedMatrixServerName,
-  isCanonicalMatrixUserId,
   pendingSessionPath,
   profileDir as configuredProfileDir,
   readPendingSession,
@@ -75,7 +74,7 @@ describe("secret-bearing CLI profile state", () => {
     expect(() => configuredProfileDir()).toThrow(/non-root absolute/u);
   });
 
-  it("binds only exact canonical MXIDs to the independently trusted TeleCrypt topology", () => {
+  it("binds only supported homeservers to the TeleCrypt topology", () => {
     expect(expectedMatrixServerName("https://backend.telecrypt.io")).toBe("telecrypt.io");
     expect(expectedMatrixServerName("https://backend.stage.telecrypt.io")).toBe("stage.telecrypt.io");
     expect(expectedMatrixServerName("https://backend.preview.telecrypt.io")).toBeNull();
@@ -85,10 +84,21 @@ describe("secret-bearing CLI profile state", () => {
     expect(expectedMatrixServerName("http://localhost:8008")).toBe("localhost:8008");
     expect(expectedMatrixServerName("http://localhost:8008/"))
       .toBe("localhost:8008");
-    expect(isCanonicalMatrixUserId("@alice:telecrypt.io")).toBe(true);
-    expect(isCanonicalMatrixUserId("@Alice:telecrypt.io")).toBe(false);
-    expect(isCanonicalMatrixUserId("@alice:telecrypt.io:0443")).toBe(false);
-    expect(isCanonicalMatrixUserId("@alice:telecrypt.io:443")).toBe(true);
+  });
+
+  it("uses the SDK Matrix identity contract while binding saved users to the selected server", () => {
+    const dir = profileDir();
+    const supportedIdentity = { ...session(), userId: "@Alice:TELECRYPT.IO" };
+    writeSession(supportedIdentity, dir);
+    expect(readSession(dir)).toEqual(supportedIdentity);
+
+    const foreignIdentity = { ...session(), userId: "@alice:other.example.test" };
+    fs.writeFileSync(sessionPath(dir), JSON.stringify(foreignIdentity), { mode: 0o600 });
+    expect(() => readSession(dir)).toThrow(/not a valid OIDC\/MAS session/u);
+
+    const foreignEndpoint = { ...session(), oidcTokenEndpoint: "https://other.example.test/token" };
+    fs.writeFileSync(sessionPath(dir), JSON.stringify(foreignEndpoint), { mode: 0o600 });
+    expect(() => readSession(dir)).toThrow(/not a valid OIDC\/MAS session/u);
   });
 
   it("writes session and crypto state as private regular files", () => {
