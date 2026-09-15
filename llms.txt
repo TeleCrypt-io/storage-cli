@@ -1,7 +1,7 @@
 # TeleCrypt.io Storage CLI
 
 The sole public authority for current TeleCrypt project facts, architecture, responsibilities,
-principles, limits, and user-visible behavior is https://telecrypt-io.github.io/llms-authority/llms.txt.
+principles, limits, and user-visible behavior is https://www.telecrypt.io/llms.txt.
 
 Repository-specific Storage CLI usage, command and recovery reference, development instructions,
 and release procedures remain in [CLI.md](./CLI.md), [README.md](./README.md), and
