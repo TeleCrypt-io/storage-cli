@@ -1,4 +1,15 @@
-# TeleCrypt.io Storage CLI
+# TeleCrypt.io Storage CLI (archived)
+
+> **This repository is archived.** Storage CLI development and releases now live in
+> [`TeleCrypt-io/storage.telecrypt.io/cli`](https://github.com/TeleCrypt-io/storage.telecrypt.io/tree/main/cli).
+> Install a current release from the destination repository, for example:
+>
+> ```bash
+> npm install -g --ignore-scripts https://github.com/TeleCrypt-io/storage.telecrypt.io/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
+> ```
+>
+> Historical branches, tags, and releases remain here for reproducibility. New changes and
+> releases are not made in this repository.
 
 The command-line interface for TeleCrypt.io end-to-end encrypted Matrix storage.
 
@@ -13,13 +24,14 @@ It consumes one exact public `@telecrypt-io/storage` library version and provide
 upload, download, rename, and deletion. Its real-stack Harness scenarios exercise these same SDK
 operations as the web UI; they are operator-local acceptance tests, never hosted CI.
 
-**Distribution:** the standalone CLI is available only as an exact
-[GitHub Release](https://github.com/TeleCrypt-io/storage-cli/releases), never from the NPM registry.
+**Historical distribution:** releases from this archived repository remain available through its
+[GitHub Releases](https://github.com/TeleCrypt-io/storage-cli/releases). New releases are published
+from the destination repository above, never from the NPM registry.
 
 ## Install
 
 ```bash
-npm install -g --ignore-scripts https://github.com/TeleCrypt-io/storage-cli/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
+npm install -g --ignore-scripts https://github.com/TeleCrypt-io/storage.telecrypt.io/releases/download/storage-cli-vX.Y.Z/storage-cli-vX.Y.Z.tgz
 ```
 
 Replace `X.Y.Z` with an existing release version. `npm` is used only as the Node installer: the
